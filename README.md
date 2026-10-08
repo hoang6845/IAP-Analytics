@@ -272,7 +272,7 @@ Lệnh tạo khóa Google và YAML tại /tmp rồi chạy Uvicorn; SQLite lưu 
 3. Apply thay đổi và deploy/redeploy.
 4. Kiểm tra logs có `Scheduler ready` và server chạy tại `0.0.0.0:8000`.
 5. Mở `https://<RAILWAY_DOMAIN>/health`, mong đợi status: ok.
-
+<!-- https://iap-analytics-production.up.railway.app/health -->
 PORT=8000 khớp server và healthcheck. Railway kiểm tra healthcheck khi deploy, không giám sát liên tục sau deploy; deployment có volume có thể gián đoạn ngắn. Xem [Railway Healthchecks](https://docs.railway.com/deployments/healthchecks).
 
 **Kết nối Qonversion — sau khi Railway có domain**
@@ -289,6 +289,17 @@ Thực hiện phần này sau khi deployment Railway chạy thành công, đã G
 Có thể chạy lại test PowerShell ở bước 2 với URL Railway để kiểm tra endpoint riêng. Đợi phút SYNC_MINUTE tiếp theo, kiểm tra logs và các tab Sheets. /health thành công chưa xác nhận quyền Google hoặc sync thành công.
 
 Có thể chạy unittest qua Railway SSH trong container đang chạy. `railway run` chạy trên máy local, không tự truy cập volume remote. Tránh chạy process sync riêng đồng thời với scheduler: khóa sync chỉ bảo vệ trong cùng process.
+
+### Sync ngay bằng nút bấm
+
+Sau khi deploy phiên bản có tính năng này, mở trang gốc `https://<RAILWAY_DOMAIN>/` (local: `http://127.0.0.1:8000/`), nhập WEBHOOK_TOKEN của deployment và bấm **Sync ngay**.
+
+Trang gọi POST /admin/sync với header X-Webhook-Token. Token không được nhúng vào trang hoặc lưu vào browser storage. Chỉ chia sẻ token cho người được phép chạy sync.
+
+Chờ kết quả hoàn tất trước khi đóng trang. Nếu đã có lần sync đang chạy, trang báo chờ; nếu mất kết nối/timeout, kiểm tra logs trước khi thử lại vì lần sync có thể vẫn chạy. Lịch sync mỗi giờ tiếp tục như cũ, dùng cùng khóa với sync thủ công. Sync chỉ kiểm tra Order ID đã nhận, không tự nhập đơn lịch sử.
+
+Để cập nhật Railway, push source mới lên repo/branch đã kết nối rồi deploy; chờ healthcheck thành công trước khi mở trang. Cập nhật local bằng docker compose up -d --build.
+
 
 ### 4. Xử lý lỗi
 

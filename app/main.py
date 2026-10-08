@@ -20,6 +20,7 @@ import requests
 import yaml
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.responses import HTMLResponse
 from google.auth.transport.requests import AuthorizedSession
 from google.oauth2 import service_account
 
@@ -253,17 +254,19 @@ def export_sheets():
 def sync_job():
     if not LOCK.acquire(blocking=False):
         log.warning('Sync skipped; previous run active')
-        return
+        return {'status': 'busy'}
     try:
         detail = sync_orders()
         with database() as db:
             db.execute('INSERT INTO sync_log(ran_at,result,detail) VALUES(?,?,?)', (utc_now(), 'OK_PLAY', detail))
         detail += '; ' + export_sheets()
         log.info('Sync complete: %s', detail)
+        return {'status': 'ok', 'detail': detail}
     except Exception as ex:
         log.exception('Sync failed')
         with database() as db:
             db.execute('INSERT INTO sync_log(ran_at,result,detail) VALUES(?,?,?)', (utc_now(), 'ERROR', str(ex)[:1000]))
+        return {'status': 'error'}
     finally:
         LOCK.release()
 
@@ -289,6 +292,52 @@ def shutdown():
 @app.get('/health')
 def health():
     return {'status': 'ok', 'time': utc_now()}
+
+
+
+@app.get('/', response_class=HTMLResponse)
+def sync_page():
+    return HTMLResponse("""<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>IAP Analytics</title><style>
+body{font-family:system-ui,sans-serif;max-width:560px;margin:60px auto;padding:24px;background:#f5f7fb;color:#182235}
+input,button{box-sizing:border-box;width:100%;padding:14px;margin-top:12px;font:inherit;border-radius:8px;border:1px solid #ccd3df}
+button{background:#2458d6;color:white;cursor:pointer}button:disabled{opacity:.6;cursor:wait}
+#result{white-space:pre-wrap;overflow-wrap:anywhere}label{display:block}
+</style></head><body><h1>IAP Analytics</h1>
+<p>Kiểm tra đơn Google Play đã nhận và cập nhật Google Sheets ngay. Lịch sync mỗi giờ vẫn hoạt động.</p>
+<form id="sync-form"><label for="token">WEBHOOK_TOKEN</label>
+<input id="token" type="password" autocomplete="off" required placeholder="Nhập token của deployment này">
+<button id="sync-button" type="submit">Sync ngay</button></form>
+<p id="result" role="status" aria-live="polite"></p>
+<script>
+const form=document.getElementById('sync-form'),button=document.getElementById('sync-button'),result=document.getElementById('result');
+form.addEventListener('submit',async event=>{
+  event.preventDefault();button.disabled=true;result.textContent='Đang sync, vui lòng chờ…';
+  try{
+    const response=await fetch('/admin/sync',{method:'POST',headers:{'X-Webhook-Token':document.getElementById('token').value}});
+    const data=await response.json();
+    if(response.status===401) result.textContent='Token không hợp lệ.';
+    else if(response.status===409) result.textContent='Một lần sync đang chạy. Vui lòng chờ hoàn tất.';
+    else if(!response.ok) result.textContent='Sync thất bại. Kiểm tra logs và Sync_Log.';
+    else result.textContent='Sync hoàn tất: '+data.detail;
+  }catch(error){result.textContent='Không nhận được kết quả. Kiểm tra logs trước khi thử lại; lần sync có thể vẫn đang chạy.';}
+  finally{button.disabled=false;}
+});
+</script></body></html>""", headers={'Cache-Control': 'no-store'})
+
+
+@app.post('/admin/sync')
+def manual_sync(x_webhook_token: str | None = Header(default=None)):
+    expected = os.getenv('WEBHOOK_TOKEN', '')
+    if len(expected) < 24 or not x_webhook_token or not hmac.compare_digest(x_webhook_token, expected):
+        raise HTTPException(401, 'Unauthorized')
+    result = sync_job()
+    if result['status'] == 'busy':
+        raise HTTPException(409, 'Sync already running')
+    if result['status'] == 'error':
+        raise HTTPException(500, 'Sync failed; check logs')
+    return result
 
 
 @app.post('/webhooks/qonversion/{app_key}')
