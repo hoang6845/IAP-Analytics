@@ -1,0 +1,16 @@
+services:
+  iap-analytics:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./data:/data
+      - ./config:/code/config:ro
+      - ./secrets/google-service-account.json:/run/secrets/google-service-account.json:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)"]
+      interval: 30s
+      timeout: 7s
+      retries: 3

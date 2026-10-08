@@ -1,0 +1,8 @@
+.env
+secrets/*
+!secrets/.gitkeep
+data/*
+!data/.gitkeep
+config/apps.yaml
+__pycache__/
+.pytest_cache/
