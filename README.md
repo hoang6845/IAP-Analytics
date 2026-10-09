@@ -350,7 +350,7 @@ Mở trang gốc deployment, nhập token và bấm **Sync ngay**, hoặc đợi
 1. `Qonversion_Events` phải có sự kiện thật khớp giao dịch. Môi trường `sandbox` và `test` bị bỏ qua khi xác minh Google Play.
 2. `Order ID` phải là mã Google Play thật bắt đầu bằng `GPA.`. Code lấy từ `transaction.transaction_id` hoặc `order_id`; thiếu mã hoặc mã không bắt đầu bằng `GPA.` sẽ bị bỏ qua. Product trống ở tab sự kiện chưa chứng minh lỗi: sản phẩm trong Transactions lấy từ Google Play.
 3. `Sync_Log` có `verified` lớn hơn 0 nghĩa là có đơn được xác minh, có thể gồm đơn kiểm tra lại. `not_found` lớn hơn 0 nghĩa là gọi Google Play nhận 404. `verified=0, not_found=0` chưa chứng minh quyền đọc Google Play hoạt động.
-4. `Transactions` phải có mã đơn tương ứng và `Google Verified = YES`; `Product_Analysis` tổng hợp các đơn đã xác minh. Xem `Last export UTC` ở Dashboard để tránh đọc snapshot cũ; cộng 7 giờ để đổi sang giờ Việt Nam.
+4. `Transactions` phải có mã đơn tương ứng và `Google Verified = YES`; `Product_Analysis` tổng hợp các đơn đã xác minh. Xem `Last export UTC` ở Diagnostics hoặc As Of Local ở Dashboard để tránh đọc snapshot cũ; cộng 7 giờ để đổi sang giờ Việt Nam.
 
 Nếu sync lỗi trước export, Sheet có thể chưa chứa sự kiện hoặc lỗi mới nhất. Xem Railway logs; Sheet cũ không đủ kết luận webhook chưa nhận.
 
@@ -483,7 +483,7 @@ docker compose exec iap-analytics python -c 'from app.main import sync_job; sync
 | `Transactions` | One row per verified `(app, order_id)`; state, buyer country, product, original currency, charged total, Play developer revenue. |
 | `Country_Analysis` | Per-app, per-buyer-country, per-currency processed/pending/canceled/refunded counts and financial amounts. |
 | `Product_Analysis` | Per-app, per-product, per-currency order stats. |
-| `Dashboard` | Global counts and export time; deliberately avoids misleading summed multicurrency revenue. |
+| `Dashboard` | Compact UA/PO summary per app and currency: observed payers, trials, paid transactions and amounts. |
 | `Qonversion_Events` | Qonversion lifecycle event log and separately labeled IP country; excludes raw PII-rich JSON. |
 | `Sync_Log` | Sync successes/errors for diagnosis. |
 
@@ -493,15 +493,16 @@ For a country bar chart in Sheets: Insert → Chart; use `Country_Analysis` and 
 
 ### Báo cáo chi tiết: loại gói, quốc gia và Dashboard
 
-Sau khi deploy mã mới, bấm **Sync ngay**. Các tab hiện có tự mở rộng số cột/dòng, giữ các cột ban đầu, thêm tiêu đề nổi bật và bộ lọc. Không cần đổi Railway Variables nếu tên product/base plan đã thể hiện rõ loại gói.
+Sau khi deploy mã mới, bấm **Sync ngay**. Các tab hiện có tự mở rộng số cột/dòng, giữ đầy đủ các cột, đưa thông tin quan trọng lên đầu, thêm tiêu đề nổi bật và bộ lọc. Không cần đổi Railway Variables nếu tên product/base plan đã thể hiện rõ loại gói.
 
 | Tab | Chi tiết bổ sung |
 |---|---|
 | Transactions | Plan Type, mã product:base-plan, nguồn phân loại, subscription/one-time, base plan, offer, tên sản phẩm, pricing phase, kỳ dịch vụ tại thời điểm đơn, tháng UTC, ngày local, lần xác minh cuối, thuế, sự kiện Qonversion gần nhất và quốc gia IP riêng. |
 | Country_Analysis | Tổng đơn, mọi trạng thái, số gói tuần/tháng/năm/lifetime/unknown/mixed, số biến thể gói, tiền trung bình, số đơn có dữ liệu tiền, đơn có tiền lớn hơn 0, đơn 0 đồng, trial và ngày giao dịch đầu/cuối. |
 | Product_Analysis | Tách theo app + product + currency + loại gói + mã plan cụ thể. Có đơn hủy, hoàn một phần, chờ hoàn, doanh thu Google cung cấp, tổng đơn, số quốc gia, dữ liệu tiền và trial. Các base plan khác nhau của cùng product không bị gộp. |
-| Dashboard | Tổng đơn và trạng thái, loại gói, quốc gia, app; số webhook production/sandbox/unknown; mã GPA chưa xác minh; sự kiện thiếu mã; số sự kiện theo tên và loại gói; thông tin sync; số tiền theo app/currency/tháng/loại gói. |
+| Dashboard | Tổng quan UA/PO gọn theo app/currency: observed payers, paid transactions, trial, repeat payment và số tiền. Báo cáo chi tiết cũ chuyển sang Diagnostics. |
 
+**Thứ tự cột để xem nhanh:** Transactions ưu tiên user, loại gói, ngày local, tiền và trạng thái; Users ưu tiên user, Payment Count, currency, tiền và gói; Country/Product ưu tiên nhóm, tổng đơn và số tiền. Nguồn phân loại, mã offer/base plan, số liệu chẩn đoán và thời gian kiểm tra chuyển về sau. Description tự cập nhật chữ cái vị trí cột. Phép tính và dữ liệu giữ nguyên; công thức/biểu đồ tham chiếu vị trí cột cần đối chiếu lại sau sync.
 **Cách xác định loại gói**
 
 `WEEKLY` = tuần, `MONTHLY` = tháng, `YEARLY` = năm, `LIFETIME` = trọn đời. `UNKNOWN` là chưa đủ dữ liệu; `MIXED` là một đơn có nhiều loại gói. Ưu tiên product và basePlanId từ đơn Google Play; nếu thiếu base plan và chỉ có một product, có thể dùng product_id của webhook cùng mã đơn và cùng store product, loại trừ sandbox/test. Không suy ra lifetime chỉ vì đây là sản phẩm mua một lần.
@@ -525,13 +526,68 @@ Mapping này chỉ phục vụ phân loại báo cáo, không thay đổi mua h�
 **Cách đọc số liệu**
 
 - Transactions/Country_Analysis/Product_Analysis vẫn chỉ chứa đơn đã xác minh. Dashboard có thêm đếm sự kiện sandbox riêng để kiểm tra luồng webhook; không cộng sandbox vào số tiền.
-- Dashboard có dòng tổng `Order Month UTC = ALL`, dòng từng tháng và `Plan Type = ALL`/từng loại gói. Các mức này chồng nhau: lọc App, Currency, tháng và loại gói trước khi SUM hoặc vẽ biểu đồ. Số tiền không có tổng đa tiền tệ.
+- Diagnostics có dòng tổng `Order Month UTC = ALL`, dòng từng tháng và `Plan Type = ALL`/từng loại gói. Các mức này chồng nhau: lọc App, Currency, tháng và loại gói trước khi SUM hoặc vẽ biểu đồ. Số tiền không có tổng đa tiền tệ.
 - Phân tích tháng dựa trên tháng tạo đơn UTC và trạng thái hiện tại; không phải lịch sử dòng tiền hoặc báo cáo quyết toán. Ngày local trong Transactions dùng TZ, mặc định Asia/Bangkok (UTC+7).
 - Charged Amount chỉ cộng đơn PROCESSED; Developer Revenue chỉ cộng PROCESSED/PARTIALLY_REFUNDED có giá trị Google cung cấp. Tiền thiếu để trống ở giao dịch; tổng được tính từ giá trị đã biết và có cột số đơn có dữ liệu. Tiền trung bình chia cho số đơn processed có giá trị, không coi tiền thiếu là 0.
 - PROCESSED có thể có số tiền 0: xem riêng Processed Positive Amount Orders, Processed Zero Amount Orders và Free Trial Phase Orders. Trial chỉ đếm khi Google có pricing phase tương ứng.
 - Số đơn và số sự kiện không phải số người đăng ký duy nhất. Subscription canceled là sự kiện vòng đời; không tự đổi trạng thái đơn đã thanh toán thành CANCELED.
-- Service Period End là snapshot của kỳ được đơn chi trả, không xác nhận thuê bao hiện còn active. Không xuất purchase token, user ID, email hoặc raw payload vào các cột mới.
+- Service Period End là snapshot của kỳ được đơn chi trả, không xác nhận thuê bao hiện còn active. Không xuất purchase token, email hoặc raw payload. User ID/custom_user_id/identity_id được xuất để thống kê theo user như phần Users bên dưới.
 - Qonversion_Events vẫn chỉ hiển thị 20.000 sự kiện gần nhất; thống kê và liên kết sự kiện của báo cáo lấy toàn bộ sự kiện lưu trong database.
+
+### Users và Description: xem mỗi user đã thanh toán bao nhiêu lần
+
+Sau khi deploy và sync, hệ thống tự tạo **Users** và **Description**. Không cần đổi Variables hoặc tạo database mới. User ID được đọc từ raw webhook đã lưu trước đây; chỉ đơn có liên kết đủ rõ mới được gán cho user.
+
+**Users** có một dòng cho mỗi App + Qonversion User ID + Currency. Để xem một người, lọc App và User ID:
+
+- **Payment Count:** số mã đơn đã xác minh có charged lớn hơn 0, ở trạng thái PROCESSED, REFUNDED, PARTIALLY_REFUNDED hoặc PENDING_REFUND. Mỗi mã đơn chỉ đếm một lần dù có nhiều sự kiện started/renewed/canceled hoặc retry. Trial 0 đồng, đơn pending/canceled và tiền thiếu không được coi là một lần thanh toán.
+- **Payment Order Face Amount (includes refunded):** tổng tiền gốc của các đơn trong Payment Count, bao gồm đơn đã hoàn. Đây không phải tiền còn giữ hoặc doanh thu ròng. **Charged Amount (processed)** chỉ cộng đơn PROCESSED; **Developer Revenue** chỉ cộng dữ liệu Google cung cấp cho PROCESSED/PARTIALLY_REFUNDED.
+- Có số đơn theo từng trạng thái, số đơn trial/0 đồng, ngày thanh toán đầu/cuối, các gói tuần/năm/lifetime, mã đơn và quốc gia. Số lần thanh toán có thể cộng qua các dòng currency của cùng user; số tiền phải giữ riêng từng currency.
+- Các cột webhook ghi rõ **user, all currencies** là tổng sự kiện của user và lặp lại trên mỗi dòng currency. Không cộng các cột này qua nhiều dòng currency. Một sự kiện không tương đương một lần thanh toán.
+- **MATCHED:** đúng một user_id trên các webhook không phải sandbox/test của cùng (App, Order ID). **MISSING_USER_ID:** chưa có ID. **CONFLICTING_USERS:** một đơn có nhiều user_id; không tự gán cho bất kỳ user nào. Dòng User ID rỗng là nhóm đơn chưa gán được user, không phải một người thật.
+- **NO_VERIFIED_ORDERS:** user mới có webhook, chưa có đơn đã xác minh; số lần thanh toán là 0, số tiền chưa có để trống. Sandbox chỉ xuất hiện trong đếm sự kiện, không được dùng để liên kết user với đơn thật.
+- custom_user_id và identity_id hiển thị để đối chiếu, không tự gộp các Qonversion user_id khác nhau. Nếu cần thống kê một tài khoản app qua nhiều ID, cần có quy tắc liên kết đã xác nhận.
+
+Ví dụ: user có một đơn ban đầu, hai mã đơn gia hạn đã thanh toán và một sự kiện hủy thì **Payment Count = 3**, không phải 4. Nếu một trong ba đơn được hoàn tiền toàn bộ, Payment Count vẫn là 3 và Refunded Paid Orders là 1.
+
+**Description** mô tả mọi cột của mọi tab, kể cả Description: tên tab, tên cột, chữ cái vị trí cột, ý nghĩa, nguồn, phạm vi/đơn vị, dữ liệu thiếu và ghi chú. Nội dung tự cập nhật theo schema, có bộ lọc để tìm cột nhanh. Description và Users cũng được ghi lại mỗi lần sync, không dùng làm nơi lưu ghi chú thủ công.
+
+Transactions thêm User ID và User Link Status; Qonversion_Events thêm user_id/custom_user_id/identity_id. Diagnostics giữ số user quan sát, user có đơn, user có thanh toán và số đơn thiếu/xung đột user; Dashboard mới ưu tiên chỉ số kinh doanh theo currency. Báo cáo chỉ phản ánh lịch sử đã lưu và xác minh, không tự nhập đăng ký cũ hoặc khẳng định thuê bao còn active.
+
+### Đọc báo cáo dưới góc nhìn UA/PO
+
+Thứ tự tab mới: **Dashboard → Plan_Comparison → Trial_Cohorts → Users → Country_Analysis → Product_Analysis → Transactions → User_Timeline → Data_Quality → Description → Diagnostics → Sync_Log → Qonversion_Events**. Tiêu đề và hai cột đầu được cố định. Tab ngoài danh sách không bị xóa; các tab báo cáo tiếp tục được ghi lại theo snapshot.
+
+| Tab | Cách dùng |
+|---|---|
+| Dashboard | Một dòng cho mỗi app/currency, ưu tiên observed payers, số giao dịch có tiền, trial và số tiền. Không cộng số user giữa currencies: một user có thể xuất hiện nhiều dòng. As Of Local là thời điểm tạo snapshot. |
+| Plan_Comparison | So sánh gói tuần/năm/lifetime theo plan identifier + offer + country + currency. Phân biệt trial 0 đồng với người đã trả tiền. User mua nhiều gói có thể nằm ở nhiều dòng. |
+| Trial_Cohorts | Nhóm kỳ trial theo tuần bắt đầu UTC, gói, offer, quốc gia và currency. Hiển thị trial đủ thời gian quan sát, trial chưa đủ thời gian, conversion đã xác minh và trạng thái chất lượng của rate. |
+| User_Timeline | Lọc App/User ID để xem chuỗi ORDER và EVENT theo thời gian. Chỉ ORDER có số tiền; EVENT không phải lần thanh toán mới. Lọc Environment để tách sandbox. |
+| Data_Quality | Các vấn đề thiếu user/chuỗi thuê bao/thời gian, mã chưa xác minh, coverage lịch sử và tên offer không khớp số ngày trial Google trả về. |
+| Diagnostics | Giữ báo cáo Dashboard dạng Metric/Value cũ, gồm tổng ALL, tháng, loại gói, webhook và sync. Các dòng có phạm vi chồng lấn, không cộng tất cả. |
+
+**Quy tắc đọc chỉ số**
+
+- **Observed Payers** là số user liên kết rõ với ít nhất một đơn charged > 0 ở trạng thái đã thanh toán, gồm cả đơn đã hoàn. Không phải số user active hoặc toàn bộ khách hàng của app.
+- **Verified Payment Orders** không đếm trial 0 đồng. Nhiều webhook cho cùng mã đơn vẫn chỉ là một đơn. **Repeat Payment Users (observed)** là user có ít nhất hai đơn thanh toán trong nhóm, không tự coi đổi gói là gia hạn. **Verified Renewal Payment Orders** cần webhook production subscription_renewed khớp đơn có tiền.
+- **Original Paid Order Amount (includes refunds)** là tổng tiền gốc trên các đơn đã thanh toán, có cả đơn đã hoàn. **Observed Original Amount per Payer** chỉ dùng tiền của đơn gán rõ user chia cho số observed payers; không phải LTV đầy đủ hoặc dự báo. Charged Amount (processed) và developer revenue giữ quy tắc của báo cáo trước.
+- **Trial to Paid 7d Rate** dùng trial đã qua 7 ngày sau servicePeriodEndTime Google. Conversion cần đơn có tiền cùng app + user_id + original_transaction_id + plan, sau trial bắt đầu và không quá 7 ngày sau kết thúc. Nếu có trial tiếp theo trong cùng chuỗi, không gán thanh toán sau trial tiếp theo vào trial trước. Trial chồng lấn, thiếu user/chain/ngày hoặc chưa xác nhận coverage thì rate là N/A.
+- Cột conversion đếm **kỳ trial**, không đếm số event. Kỳ trial mới bắt đầu chưa vào mẫu số. Đơn nhiều line item không được đoán thời điểm trial. original_transaction_id dùng nội bộ để ghép chuỗi, không xuất purchase token.
+- OFFER_NAME_VS_TRIAL_DURATION chỉ là yêu cầu đối chiếu. Ví dụ tên free-trial-7days nhưng snapshot trial Google dài 3 ngày: không tự đổi offer hoặc kết luận cấu hình sai.
+- Số mẫu ít chưa đủ chọn gói thắng. Thay đổi quốc gia, giá/offer và độ dài thời gian quan sát đều cần xét khi so sánh; gói năm và gói tuần chưa thể dùng một số lần thanh toán để suy ra retention tương đương.
+
+**Xác nhận coverage lịch sử để mở rate**
+
+Mặc định không cần đổi Variables; các tab mới vẫn xuất số lượng quan sát và N/A khi chưa đủ lịch sử. Chỉ sau khi đã nhập và đối chiếu đầy đủ sự kiện production, user/chain và đơn đã xác minh từ một ngày nhất định đến hiện tại, thêm vào từng app trong APPS_CONFIG_YAML hoặc config/apps.yaml:
+
+```yaml
+analytics_coverage_start_utc: "2026-10-01T00:00:00Z" # Ví dụ; chỉ đặt ngày thực sự đã xác nhận đầy đủ.
+```
+
+Không dùng ngày webhook đầu tiên nhận được làm bằng chứng coverage. Cấu hình này là khai báo độ đầy đủ dữ liệu cho phân tích, không tự tải lịch sử và không thay đổi xử lý giao dịch. Những cohort bắt đầu trước coverage vẫn N/A.
+
+**Dữ liệu UA chưa có:** installs, paywall views, checkout, network/campaign/creative, spend và A/B variant chưa có nguồn nhập. Data_Quality ghi rõ các giới hạn; báo cáo không tự tính CAC/ROAS, install-to-trial hoặc active subscribers từ số event. Các chỉ số đó cần pipeline dữ liệu bổ sung, không thể suy ra từ Orders/webhook hiện tại.
 
 ## 6. How to inspect data
 
@@ -567,4 +623,4 @@ python -m unittest discover -s tests -v
 
 This code reads order data (`orders.get`), does **not** issue refunds, change subscription state or call mutating Play APIs. No Qonversion API key is required for webhook-received events. The scheduler uses one Uvicorn worker; running multiple replicas creates overlapping schedulers, so use an external scheduler/leader election if scaling out.
 
-Validation: 28 local tests pass, including HTTP webhook authentication, event persistence, duplicate responses and manual sync. Live Qonversion delivery and Google Play/Sheets integration still require validation after deployment.
+Validation: 44 local tests pass, including HTTP webhook authentication, event persistence, duplicate responses and manual sync. Live Qonversion delivery and Google Play/Sheets integration still require validation after deployment.

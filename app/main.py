@@ -23,7 +23,9 @@ from fastapi.responses import HTMLResponse
 from google.auth.transport.requests import AuthorizedSession
 from google.oauth2 import service_account
 
-from app.reports import build_reports, EXTRA_GROUP_HEADERS, PLANS
+from app.report_columns import DESCRIPTION_HEADERS, description_rows, display_headers, display_rows
+from app.reports import build_reports, EXTRA_GROUP_HEADERS, PLANS, USER_HEADERS
+from app.ua_reports import UA_HEADERS
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger('iap')
@@ -43,11 +45,21 @@ SHEETS_HEADERS['Transactions'] += ['Plan Type', 'Plan Identifier', 'Plan Type So
     'Base Plan ID', 'Offer ID', 'Product Title', 'Pricing Phase', 'Service Period Start UTC (snapshot)',
     'Service Period End UTC (snapshot)', 'Order Month UTC', 'Order Date Local', 'Last Checked UTC',
     'Last Google Event UTC', 'Tax (order currency)', 'Latest Qonversion Event', 'Latest Qonversion Event UTC',
-    'Qonversion Country (IP)']
+    'Qonversion Country (IP)', 'User ID', 'User Link Status']
 SHEETS_HEADERS['Country_Analysis'] += EXTRA_GROUP_HEADERS + [p + ' Orders' for p in PLANS] + ['Plan Variants']
 SHEETS_HEADERS['Product_Analysis'] += ['Plan Type', 'Plan Identifier', 'Canceled Orders', 'Partially Refunded Orders',
     'Developer Revenue (processed and partially refunded)'] + EXTRA_GROUP_HEADERS + ['Buyer Countries']
 SHEETS_HEADERS['Dashboard'] += ['App', 'Currency', 'Order Month UTC', 'Plan Type', 'Notes']
+SHEETS_HEADERS['Users'] = USER_HEADERS
+SHEETS_HEADERS['Description'] = DESCRIPTION_HEADERS
+SHEETS_HEADERS['Qonversion_Events'] += ['User ID', 'Custom User IDs', 'Identity IDs']
+SHEETS_HEADERS['Diagnostics'] = SHEETS_HEADERS['Dashboard'][:]
+SHEETS_HEADERS.update(UA_HEADERS)
+REPORT_TAB_ORDER = ['Dashboard', 'Plan_Comparison', 'Trial_Cohorts', 'Users', 'Country_Analysis',
+    'Product_Analysis', 'Transactions', 'User_Timeline', 'Data_Quality', 'Description',
+    'Diagnostics', 'Sync_Log', 'Qonversion_Events']
+SHEETS_HEADERS = {name: SHEETS_HEADERS[name] for name in REPORT_TAB_ORDER}
+EXPORT_HEADERS = display_headers(SHEETS_HEADERS)
 
 
 
@@ -207,29 +219,51 @@ def export_sheets():
     with database() as db:
         orders = [dict(row) for row in db.execute('SELECT * FROM orders ORDER BY order_date DESC')]
         events = [dict(row) for row in db.execute('''SELECT app_key, order_id, event_time, event_name,
-            product_id, country_ip, environment, event_key, received_at FROM events ORDER BY received_at DESC''')]
+            product_id, country_ip, environment, event_key, received_at,
+            json_extract(raw_json, '$.user_id') AS user_id,
+            json_extract(raw_json, '$.custom_user_id') AS custom_user_id,
+            json_extract(raw_json, '$.identity_id') AS identity_id,
+            json_extract(raw_json, '$.transaction.original_transaction_id') AS original_transaction_id FROM events ORDER BY received_at DESC''')]
         syncs = [dict(row) for row in db.execute('SELECT * FROM sync_log ORDER BY id DESC LIMIT 100')]
     tables = build_reports(orders, events, syncs, config_apps(), utc_now(), os.getenv('TZ', 'Asia/Bangkok'))
     tables['Sync_Log'] = [[s['ran_at'], s['result'], s['detail']] for s in syncs]
     tables['Qonversion_Events'] = [[e['app_key'], e['event_time'], e['event_name'], e['order_id'],
-        e['product_id'], e['country_ip'], e['environment'], e['event_key']] for e in events[:20000]]
-    for name, header in SHEETS_HEADERS.items():
+        e['product_id'], e['country_ip'], e['environment'], e['event_key'],
+        e.get('user_id') or '', e.get('custom_user_id') or '', e.get('identity_id') or ''] for e in events[:20000]]
+    tables['Description'] = description_rows(EXPORT_HEADERS)
+    format_requests = []
+    for index, (name, header) in enumerate(EXPORT_HEADERS.items()):
         try:
             ws = spreadsheet.worksheet(name)
         except gspread.WorksheetNotFound:
             ws = spreadsheet.add_worksheet(title=name, rows=100, cols=max(12, len(header)))
-        values = [header] + [[c if isinstance(c, (float, int)) and not isinstance(c, bool) else sheet_safe(c) for c in row] for row in tables[name]]
+        values = [header] + [[c if isinstance(c, (float, int)) and not isinstance(c, bool) else sheet_safe(c) for c in row] for row in display_rows(tables[name], SHEETS_HEADERS[name], header)]
         # Existing tabs may have only 12 columns; expand before writing the richer report.
         if ws.row_count < len(values) or ws.col_count < len(header):
             ws.resize(rows=max(ws.row_count, len(values)), cols=max(ws.col_count, len(header)))
         # Full snapshot replacement eliminates duplicate rows and stale values.
         ws.clear()
         ws.update(range_name='A1', values=values, value_input_option='RAW')
-        ws.freeze(rows=1)
-        ws.format('1:1', {'textFormat': {'bold': True},
-            'backgroundColor': {'red': 0.88, 'green': 0.93, 'blue': 1.0}})
-        if name in ('Transactions', 'Country_Analysis', 'Product_Analysis', 'Dashboard'):
-            ws.set_basic_filter(f'A1:{gspread.utils.rowcol_to_a1(max(2, len(values)), len(header))}')
+        # Batch presentation changes to avoid one extra API write per operation/tab.
+        format_requests += [
+            {'updateSheetProperties': {'properties': {'sheetId': ws.id, 'index': index,
+                'gridProperties': {'frozenRowCount': 1, 'frozenColumnCount': min(2, len(header))}},
+                'fields': 'index,gridProperties.frozenRowCount,gridProperties.frozenColumnCount'}},
+            {'repeatCell': {'range': {'sheetId': ws.id, 'startRowIndex': 0, 'endRowIndex': 1},
+                'cell': {'userEnteredFormat': {'textFormat': {'bold': True},
+                    'backgroundColor': {'red': 0.88, 'green': 0.93, 'blue': 1.0}, 'wrapStrategy': 'WRAP'}},
+                'fields': 'userEnteredFormat'}},
+        ]
+        if name != 'Sync_Log':
+            format_requests.append({'setBasicFilter': {'filter': {'range': {'sheetId': ws.id,
+                'startRowIndex': 0, 'endRowIndex': max(2, len(values)), 'startColumnIndex': 0, 'endColumnIndex': len(header)}}}})
+        if name == 'Trial_Cohorts':
+            rate_column = header.index('Trial to Paid 7d Rate')
+            format_requests.append({'repeatCell': {'range': {'sheetId': ws.id, 'startRowIndex': 1,
+                'startColumnIndex': rate_column, 'endColumnIndex': rate_column + 1},
+                'cell': {'userEnteredFormat': {'numberFormat': {'type': 'PERCENT', 'pattern': '0.0%'}}},
+                'fields': 'userEnteredFormat.numberFormat'}})
+    spreadsheet.batch_update({'requests': format_requests})
     return f'Exported orders={len(orders)}, events={len(events)}'
 
 

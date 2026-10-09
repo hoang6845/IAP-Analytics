@@ -28,6 +28,7 @@ class ReportsTest(unittest.TestCase):
         return build_reports(orders, list(events), [], apps, NOW)
 
     def rows(self, report, name):
+        name = 'Diagnostics' if name == 'Dashboard' else name
         return [dict(zip(main.SHEETS_HEADERS[name], row)) for row in report[name]]
 
     def test_base_plans_split_product_and_dashboard_currency_month(self):
@@ -143,14 +144,36 @@ class ReportsTest(unittest.TestCase):
                 payload.update(orderId='GPA.1', state='PROCESSED', createTime=o['order_date'],
                     total={'currencyCode': 'USD', 'units': '10'}, buyerAddress={'buyerCountry': 'VN'})
                 main.ingest_order('app', payload)
+                with main.database() as db:
+                    db.execute('''INSERT INTO events(event_key,app_key,order_id,event_time,event_name,product_id,country_ip,environment,raw_json,received_at)
+                        VALUES(?,?,?,?,?,?,?,?,?,?)''', ('user-event', 'app', 'GPA.1', NOW, 'subscription_started', 'premium', 'VN', 'production',
+                        json.dumps({'user_id': 'QON_saved', 'custom_user_id': '=UNSAFE()', 'identity_id': 'identity-saved', 'transaction': {'original_transaction_id': 'GPA.root'}}), NOW))
                 main.export_sheets()
             tx = worksheets['Transactions']
             tx.resize.assert_called_once()
             data = tx.update.call_args.kwargs['values']
-            self.assertEqual(data[1][7], 10)
-            title_index = main.SHEETS_HEADERS['Transactions'].index('Product Title')
+            self.assertEqual(data[1][data[0].index('Charged Amount')], 10)
+            title_index = data[0].index('Product Title')
             self.assertEqual(data[1][title_index], "'=BAD()")
             self.assertEqual(tx.update.call_args.kwargs['value_input_option'], 'RAW')
+            self.assertEqual(data[0][:3], ['App', 'User ID', 'Plan Type'])
+            self.assertEqual(data[0][-1], 'Last Checked UTC')
+            users_data = worksheets['Users'].update.call_args.kwargs['values']
+            self.assertEqual(users_data[1][users_data[0].index('User ID')], 'QON_saved')
+            self.assertEqual(users_data[1][users_data[0].index('Payment Count')], 1)
+            self.assertEqual(users_data[1][users_data[0].index('Custom User IDs')], "'=UNSAFE()")
+            description_data = worksheets['Description'].update.call_args.kwargs['values']
+            self.assertEqual(len(description_data), 1 + sum(len(cols) for cols in main.SHEETS_HEADERS.values()))
+            worksheets['Description'].resize.assert_called_once()
+            sheet.batch_update.assert_called_once()
+            formatting = sheet.batch_update.call_args.args[0]['requests']
+            self.assertEqual(len([r for r in formatting if 'updateSheetProperties' in r]), len(main.EXPORT_HEADERS))
+            self.assertEqual([r['updateSheetProperties']['properties']['index'] for r in formatting if 'updateSheetProperties' in r], list(range(len(main.EXPORT_HEADERS))))
+            self.assertTrue(any(r.get('repeatCell', {}).get('cell', {}).get('userEnteredFormat', {}).get('numberFormat', {}).get('type') == 'PERCENT' for r in formatting))
+            desc = [dict(zip(description_data[0], row)) for row in description_data[1:]]
+            user_column = next(row for row in desc if row['Tab'] == 'Transactions' and row['Column'] == 'User ID')
+            self.assertEqual(user_column['Column Letter'], 'B')
+            self.assertEqual(users_data[0][:3], ['App', 'User ID', 'Payment Count'])
 
 
 if __name__ == '__main__':
