@@ -282,13 +282,79 @@ Thực hiện phần này sau khi deployment Railway chạy thành công, đã G
 1. Trong Qonversion Dashboard, chọn đúng project/app rồi mở tích hợp **Webhooks**.
 2. Bật các sự kiện production cần theo dõi: mua hàng, subscription, renewal và refund.
 3. Điền URL `https://<RAILWAY_DOMAIN>/webhooks/qonversion/<app_key>`, ví dụ `https://<RAILWAY_DOMAIN>/webhooks/qonversion/cute_keyboard`. Thay domain bằng domain Railway và app_key bằng key trong YAML.
-4. Endpoint yêu cầu header `X-Webhook-Token` khớp `WEBHOOK_TOKEN` đã đặt trong Railway Variables, dài ít nhất 24 ký tự. Kiểm tra Qonversion có hỗ trợ header này; nếu không, cần proxy xác thực webhook rồi chèn header và dùng URL HTTPS của proxy làm destination.
+4. Trong Qonversion, điền **Header Authorization-Token Value** bằng giá trị `WEBHOOK_TOKEN` trên Railway (ít nhất 24 ký tự), không thêm `Bearer`. Receiver nhận header `Authorization-Token` và vẫn hỗ trợ `X-Webhook-Token` cho lệnh test. Nếu có cả hai, `Authorization-Token` được ưu tiên.
 5. Lưu cấu hình, bật tích hợp và gửi test webhook. Kiểm tra phản hồi cùng Railway logs; xác minh App ID trong payload khớp `qonversion_app_id`.
 6. Kiểm tra một giao dịch production thật để xác nhận Google Play Order ID được nhận và xác minh thành công.
 
 Có thể chạy lại test PowerShell ở bước 2 với URL Railway để kiểm tra endpoint riêng. Đợi phút SYNC_MINUTE tiếp theo, kiểm tra logs và các tab Sheets. /health thành công chưa xác nhận quyền Google hoặc sync thành công.
 
 Có thể chạy unittest qua Railway SSH trong container đang chạy. `railway run` chạy trên máy local, không tự truy cập volume remote. Tránh chạy process sync riêng đồng thời với scheduler: khóa sync chỉ bảo vệ trong cùng process.
+
+### Kiểm tra webhook Qonversion đã hoạt động chưa
+
+Kiểm tra riêng việc nhận webhook và việc xác minh đơn. `/health` trả `ok` hoặc `Sync_Log` ghi `OK_PLAY` chưa chứng minh webhook production hoạt động.
+
+**1. Kiểm tra cấu hình Qonversion**
+
+- Chọn đúng project/app, mở Webhooks, kiểm tra tích hợp đã bật và chọn các sự kiện production cần nhận. Tham khảo [Qonversion Webhooks](https://qonversion.io/integrations/webhooks).
+- Nếu vẫn dùng deployment hiện tại, destination là `https://iap-analytics-production.up.railway.app/webhooks/qonversion/cute_keyboard`. Đối chiếu domain đang chạy trong Railway.
+- `app_key` phải khớp YAML đang deploy; hiện tại là `cute_keyboard`.
+- Điền **Header Authorization-Token Value** trong Qonversion bằng `WEBHOOK_TOKEN` trên Railway, dài ít nhất 24 ký tự, không thêm `Bearer`. Receiver nhận `Authorization-Token` và vẫn hỗ trợ `X-Webhook-Token`; nếu có cả hai, `Authorization-Token` được ưu tiên. Header `Authorization` không được hỗ trợ.
+- Nếu payload có `app_id`, đối chiếu với `qonversion_app_id` đang deploy; kiểm tra payload thật thay vì đoán loại ID.
+
+**2. Test endpoint riêng bằng PowerShell**
+
+Lệnh này ghi sự kiện sandbox vào deployment nhưng không tính thành đơn thật. Nó kiểm tra endpoint và token; chưa chứng minh Qonversion tự gửi webhook.
+
+```powershell
+$baseUrl = 'https://iap-analytics-production.up.railway.app'
+Invoke-RestMethod -Uri "$baseUrl/health"
+$secureToken = Read-Host 'Nhập WEBHOOK_TOKEN của Railway' -AsSecureString
+$credential = [System.Management.Automation.PSCredential]::new('webhook', $secureToken)
+$headers = @{ 'X-Webhook-Token' = $credential.GetNetworkCredential().Password }
+$body = @{
+    event_name = 'subscription_started'
+    environment = 'sandbox'
+    time = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    transaction = @{ transaction_id = 'GPA.EXAMPLE-DO-NOT-USE' }
+} | ConvertTo-Json -Depth 3
+try {
+    Invoke-RestMethod -Method Post -Uri "$baseUrl/webhooks/qonversion/cute_keyboard" -Headers $headers -ContentType 'application/json' -Body $body
+} finally {
+    $headers.Clear()
+    Remove-Variable credential, secureToken
+}
+```
+
+Mong đợi HTTP 200 với `accepted: true`, `duplicate: false` và `event_key`. Gửi lại payload y hệt có thể trả `duplicate: true`: đã nhận request nhưng không thêm dòng trùng. Mở URL webhook bằng trình duyệt dùng GET có thể trả 405 vì endpoint chỉ nhận POST.
+
+**3. Xác nhận request đến từ Qonversion**
+
+Nếu giao diện có chức năng gửi test hoặc lịch sử delivery, gửi test rồi xem URL đích, HTTP status và response. Nếu không có, theo dõi một sự kiện mới phát sinh qua app dùng Qonversion SDK. Đối chiếu thời điểm với Railway HTTP access logs và mã đơn trong dữ liệu sự kiện. Request tự gửi ở bước 2 không thay thế bước này.
+
+| Kết quả | Kiểm tra |
+|---|---|
+| 200, accepted: true | Receiver đã lưu sự kiện hoặc nhận lại payload trùng; kiểm tra tiếp môi trường và mã đơn. |
+| 401 | Thiếu/sai Authorization-Token (hoặc X-Webhook-Token), token quá ngắn hoặc thêm Bearer. |
+| 404, Unknown app | app_key trên URL không có trong cấu hình đang deploy. |
+| 422 | Thiếu event_name, payload không phải object hoặc app_id không khớp. |
+| 400 / 413 | JSON sai / payload vượt 256 KiB. |
+| 405 | Sai phương thức; cần POST. |
+| 5xx / timeout | Xem Railway logs; chưa thể kết luận sự kiện đã lưu. |
+| Không thấy request | Kiểm tra tích hợp đã bật, đúng project, URL và sự kiện đã phát sinh. |
+
+**4. Kiểm tra luồng production tới Sheet**
+
+Mở trang gốc deployment, nhập token và bấm **Sync ngay**, hoặc đợi phút `SYNC_MINUTE` mỗi giờ (mặc định phút 05). Webhook ghi SQLite; Sheet chỉ cập nhật khi sync/export thành công.
+
+1. `Qonversion_Events` phải có sự kiện thật khớp giao dịch. Môi trường `sandbox` và `test` bị bỏ qua khi xác minh Google Play.
+2. `Order ID` phải là mã Google Play thật bắt đầu bằng `GPA.`. Code lấy từ `transaction.transaction_id` hoặc `order_id`; thiếu mã hoặc mã không bắt đầu bằng `GPA.` sẽ bị bỏ qua. Product trống ở tab sự kiện chưa chứng minh lỗi: sản phẩm trong Transactions lấy từ Google Play.
+3. `Sync_Log` có `verified` lớn hơn 0 nghĩa là có đơn được xác minh, có thể gồm đơn kiểm tra lại. `not_found` lớn hơn 0 nghĩa là gọi Google Play nhận 404. `verified=0, not_found=0` chưa chứng minh quyền đọc Google Play hoạt động.
+4. `Transactions` phải có mã đơn tương ứng và `Google Verified = YES`; `Product_Analysis` tổng hợp các đơn đã xác minh. Xem `Last export UTC` ở Dashboard để tránh đọc snapshot cũ; cộng 7 giờ để đổi sang giờ Việt Nam.
+
+Nếu sync lỗi trước export, Sheet có thể chưa chứa sự kiện hoặc lỗi mới nhất. Xem Railway logs; Sheet cũ không đủ kết luận webhook chưa nhận.
+
+**Đăng ký cũ:** sync không tự tải toàn bộ người đăng ký. Nó chỉ xác minh Order ID đã nhận; sự kiện production có mã đơn được chọn trong cửa sổ `ORDER_RECHECK_DAYS` theo thời gian sự kiện hoặc thời gian nhận (mặc định 45 ngày). Lịch sử chưa từng nhận qua webhook cần luồng nhập dữ liệu riêng.
 
 ### Sync ngay bằng nút bấm
 
@@ -305,7 +371,7 @@ Chờ kết quả hoàn tất trước khi đóng trang. Nếu đã có lần sy
 
 | Hiện tượng | Kiểm tra |
 |---|---|
-| Webhook 401 | Header thiếu/sai hoặc token dưới 24 ký tự |
+| Webhook 401 | Authorization-Token hoặc X-Webhook-Token thiếu/sai, token dưới 24 ký tự hoặc thêm Bearer |
 | 404 Unknown app | Key trên URL không có trong YAML |
 | 422 | Thiếu event_name, payload không phải object hoặc app_id không khớp |
 | 413 | Payload vượt 262.144 byte |
@@ -327,7 +393,7 @@ A runnable **multi-app pilot** that receives Qonversion events, verifies **known
 
 > **Coverage:** Google Play Orders API does **not** list all historical orders. This system observes Order IDs received through incoming Qonversion webhooks. It will **not reconstruct historic orders** that have not been captured, and the paid-order population is incomplete until a separately sourced history is imported. A production-scale financial reconciliation pipeline should additionally ingest Play **Sales/Earnings reports** from the developer reports Cloud Storage bucket. These are distinct financial/settlement datasets and must not be blindly combined with Orders API data.
 
-> **Webhook compatibility:** The endpoint expects an `X-Webhook-Token` header. Confirm that your Qonversion webhook configuration can send a custom header. If it cannot, use a protected webhook ingress/proxy that injects the header after authenticating the sender, or adapt the receiver after checking Qonversion's exact webhook security mechanism. Do **not** expose the endpoint without verification or put secrets in public source code.
+> **Webhook authentication:** Set Qonversion **Header Authorization-Token Value** to `WEBHOOK_TOKEN`, without a Bearer prefix. The receiver accepts `Authorization-Token` and retains `X-Webhook-Token` for existing clients. If both headers are present, `Authorization-Token` takes precedence. The admin sync endpoint still requires `X-Webhook-Token`.
 
 ## Architecture
 
@@ -361,7 +427,7 @@ Before deployment, collect the Qonversion App ID for your YAML configuration. Pe
 1. In Qonversion Dashboard, enable **Webhooks** integration for the correct project/application.
 2. Enable relevant production subscription, renewal, refund and in-app purchase events.
 3. Configure destination `https://YOUR_HOST/webhooks/qonversion/cute_keyboard` (or the correct unique `app_key`).
-4. Set and verify webhook authentication. This template checks `X-Webhook-Token` against `WEBHOOK_TOKEN`. Configure that header in the provider if supported, or authenticate upstream in your reverse proxy and inject it.
+4. Set Qonversion **Header Authorization-Token Value** to `WEBHOOK_TOKEN` (at least 24 characters), without Bearer. The webhook also accepts the existing `X-Webhook-Token` header; `Authorization-Token` takes precedence if both are supplied.
 5. Send a test webhook and inspect `docker compose logs -f`. Real payload shapes/transaction ID availability vary; test the Google Play Order ID mapping with one **real, non-sandbox transaction**.
 6. Keep the project ID (Qonversion `app_id`) in `config/apps.yaml` to reject obvious cross-app routing mistakes if present in payload.
 
@@ -439,6 +505,7 @@ PY
 Run tests locally (requires pip dependencies):
 
 ```bash
+python -m pip install -r requirements-dev.txt
 python -m unittest discover -s tests -v
 ```
 
@@ -458,5 +525,4 @@ python -m unittest discover -s tests -v
 
 This code reads order data (`orders.get`), does **not** issue refunds, change subscription state or call mutating Play APIs. No Qonversion API key is required for webhook-received events. The scheduler uses one Uvicorn worker; running multiple replicas creates overlapping schedulers, so use an external scheduler/leader election if scaling out.
 
-Note: The source package is syntax-checked, but this environment could not install external Python dependencies or exercise live third-party APIs. Run tests inside your built container with `docker compose exec iap-analytics python -m unittest discover -s tests -v` before production use.
-
+Validation: 17 local tests pass, including HTTP webhook authentication, event persistence, duplicate responses and manual sync. Live Qonversion delivery and Google Play/Sheets integration still require validation after deployment.

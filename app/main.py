@@ -341,9 +341,16 @@ def manual_sync(x_webhook_token: str | None = Header(default=None)):
 
 
 @app.post('/webhooks/qonversion/{app_key}')
-async def qonversion(app_key: str, request: Request, x_webhook_token: str | None = Header(default=None)):
+async def qonversion(
+    app_key: str,
+    request: Request,
+    x_webhook_token: str | None = Header(default=None),
+    authorization_token: str | None = Header(default=None, alias='Authorization-Token'),
+):
     expected = os.getenv('WEBHOOK_TOKEN', '')
-    if len(expected) < 24 or not x_webhook_token or not hmac.compare_digest(x_webhook_token, expected):
+    # Qonversion sends Authorization-Token; retain the existing test header.
+    supplied = authorization_token if authorization_token is not None else x_webhook_token
+    if len(expected) < 24 or not supplied or not hmac.compare_digest(supplied, expected):
         raise HTTPException(401, 'Unauthorized')
     apps = {a['key']: a for a in config_apps()}
     if app_key not in apps:
