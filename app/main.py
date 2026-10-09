@@ -371,8 +371,9 @@ async def qonversion(
     if not isinstance(payload, dict) or not payload.get('event_name'):
         raise HTTPException(422, 'Expected Qonversion event_name payload')
     declared_app = payload.get('app_id')
-    configured_app = apps[app_key].get('qonversion_app_id')
-    if declared_app and configured_app and not str(configured_app).startswith('REPLACE') and str(declared_app) != str(configured_app):
+    # Qonversion app_id is the store app ID: Android package, not project ID.
+    configured_app = apps[app_key]['package_name']
+    if declared_app and str(declared_app) != str(configured_app):
         raise HTTPException(422, 'Qonversion app_id does not match configured app')
     k, oid, name, event_time, product, country, environment = normalize_webhook(payload)
     with database() as db:

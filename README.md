@@ -283,7 +283,7 @@ Thực hiện phần này sau khi deployment Railway chạy thành công, đã G
 2. Bật các sự kiện production cần theo dõi: mua hàng, subscription, renewal và refund.
 3. Điền URL `https://<RAILWAY_DOMAIN>/webhooks/qonversion/<app_key>`, ví dụ `https://<RAILWAY_DOMAIN>/webhooks/qonversion/cute_keyboard`. Thay domain bằng domain Railway và app_key bằng key trong YAML.
 4. Điền **Header Authorization-Token Value** bằng `WEBHOOK_TOKEN` nguyên bản (ít nhất 24 ký tự), không thêm Basic hoặc Bearer. Qonversion tự gửi `Authorization: Basic <token>`; token không được base64. Receiver vẫn hỗ trợ các header cũ; Authorization được ưu tiên nếu có.
-5. Lưu cấu hình, bật tích hợp và gửi test webhook. Kiểm tra phản hồi cùng Railway logs; xác minh App ID trong payload khớp `qonversion_app_id`.
+5. Lưu cấu hình, bật tích hợp và gửi test webhook. Kiểm tra phản hồi cùng Railway logs; xác minh `app_id` trong payload Android khớp `package_name` (không phải ID project Qonversion).
 6. Kiểm tra một giao dịch production thật để xác nhận Google Play Order ID được nhận và xác minh thành công.
 
 Có thể chạy lại test PowerShell ở bước 2 với URL Railway để kiểm tra endpoint riêng. Đợi phút SYNC_MINUTE tiếp theo, kiểm tra logs và các tab Sheets. /health thành công chưa xác nhận quyền Google hoặc sync thành công.
@@ -300,7 +300,7 @@ Kiểm tra riêng việc nhận webhook và việc xác minh đơn. `/health` tr
 - Nếu vẫn dùng deployment hiện tại, destination là `https://iap-analytics-production.up.railway.app/webhooks/qonversion/cute_keyboard`. Đối chiếu domain đang chạy trong Railway.
 - `app_key` phải khớp YAML đang deploy; hiện tại là `cute_keyboard`.
 - Điền **Header Authorization-Token Value** bằng `WEBHOOK_TOKEN` nguyên bản. Theo [tài liệu Qonversion](https://documentation.qonversion.io/docs/webhooks), request dùng `Authorization: Basic <token>` (token không base64). Không tự thêm Basic/Bearer vào trường cấu hình. Receiver vẫn hỗ trợ `Authorization-Token` và `X-Webhook-Token`; nếu có Authorization, header này được ưu tiên.
-- Nếu payload có `app_id`, đối chiếu với `qonversion_app_id` đang deploy; kiểm tra payload thật thay vì đoán loại ID.
+- Nếu payload có `app_id`, giá trị Android phải khớp `package_name` đang deploy: `com.emoji.cutekeyboard.themes.fontkeyboard`. `9Wu57CCs` là ID project Qonversion, không phải store app_id. Receiver kiểm tra package để ngăn sự kiện từ app khác.
 
 **2. Test endpoint riêng bằng PowerShell**
 
@@ -429,7 +429,7 @@ Before deployment, collect the Qonversion App ID for your YAML configuration. Pe
 3. Configure destination `https://YOUR_HOST/webhooks/qonversion/cute_keyboard` (or the correct unique `app_key`).
 4. Set **Header Authorization-Token Value** to the raw `WEBHOOK_TOKEN` (at least 24 characters). Qonversion adds the Basic prefix in the Authorization header; do not add it yourself or base64-encode the token.
 5. Send a test webhook and inspect `docker compose logs -f`. Real payload shapes/transaction ID availability vary; test the Google Play Order ID mapping with one **real, non-sandbox transaction**.
-6. Keep the project ID (Qonversion `app_id`) in `config/apps.yaml` to reject obvious cross-app routing mistakes if present in payload.
+6. Webhook `app_id` is the store app ID (Android package name), not the Qonversion project ID. The receiver checks it against `package_name` to reject cross-app routing mistakes. The legacy `qonversion_app_id` setting is not used for this validation.
 
 Reference: https://qonversion.io/integrations/webhooks
 
@@ -525,4 +525,4 @@ python -m unittest discover -s tests -v
 
 This code reads order data (`orders.get`), does **not** issue refunds, change subscription state or call mutating Play APIs. No Qonversion API key is required for webhook-received events. The scheduler uses one Uvicorn worker; running multiple replicas creates overlapping schedulers, so use an external scheduler/leader election if scaling out.
 
-Validation: 19 local tests pass, including HTTP webhook authentication, event persistence, duplicate responses and manual sync. Live Qonversion delivery and Google Play/Sheets integration still require validation after deployment.
+Validation: 21 local tests pass, including HTTP webhook authentication, event persistence, duplicate responses and manual sync. Live Qonversion delivery and Google Play/Sheets integration still require validation after deployment.

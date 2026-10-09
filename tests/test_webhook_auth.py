@@ -22,7 +22,7 @@ class WebhookAuthTest(unittest.TestCase):
         self.client = TestClient(main.app)
         self.payload = {
             'event_name': 'subscription_started', 'environment': 'sandbox',
-            'app_id': 'app1', 'transaction': {'transaction_id': 'GPA.TEST'},
+            'app_id': 'com.example', 'transaction': {'transaction_id': 'GPA.TEST'},
         }
 
     def tearDown(self):
@@ -76,6 +76,16 @@ class WebhookAuthTest(unittest.TestCase):
     def test_short_configured_token_rejected(self):
         with patch.dict(os.environ, {'WEBHOOK_TOKEN': 'short'}):
             self.assertEqual(self.post({'Authorization-Token': 'short'}).status_code, 401)
+
+    def test_project_id_is_not_store_app_id(self):
+        self.payload['app_id'] = 'app1'
+        self.assertEqual(self.post({'Authorization': 'Basic ' + 'a' * 32}).status_code, 422)
+        with main.database() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM events').fetchone()[0], 0)
+
+    def test_missing_event_name_still_rejected(self):
+        del self.payload['event_name']
+        self.assertEqual(self.post({'Authorization': 'Basic ' + 'a' * 32}).status_code, 422)
 
     def test_app_validation_preserved(self):
         self.payload['app_id'] = 'different-app'
