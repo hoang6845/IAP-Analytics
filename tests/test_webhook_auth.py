@@ -46,6 +46,22 @@ class WebhookAuthTest(unittest.TestCase):
             self.assertEqual(tuple(row), ('cute_keyboard', 'GPA.TEST', 'subscription_started', 'sandbox'))
             self.assertEqual(db.execute('SELECT count(*) FROM events').fetchone()[0], 1)
 
+    def test_documented_qonversion_basic_header(self):
+        response = self.post({'Authorization': 'Basic ' + 'a' * 32})
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()['accepted'])
+        with main.database() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM events').fetchone()[0], 1)
+
+    def test_invalid_authorization_does_not_fall_back(self):
+        import base64
+        for value in ('Basic wrong', 'Bearer ' + 'a' * 32, 'a' * 32, 'Basic ',
+                      'Basic ' + base64.b64encode(('a' * 32).encode()).decode()):
+            response = self.post({'Authorization': value, 'X-Webhook-Token': 'a' * 32})
+            self.assertEqual(response.status_code, 401)
+        with main.database() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM events').fetchone()[0], 0)
+
     def test_existing_header_still_accepted(self):
         self.assertEqual(self.post({'X-Webhook-Token': 'a' * 32}).status_code, 200)
 

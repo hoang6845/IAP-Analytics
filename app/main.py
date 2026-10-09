@@ -346,10 +346,16 @@ async def qonversion(
     request: Request,
     x_webhook_token: str | None = Header(default=None),
     authorization_token: str | None = Header(default=None, alias='Authorization-Token'),
+    authorization: str | None = Header(default=None),
 ):
     expected = os.getenv('WEBHOOK_TOKEN', '')
-    # Qonversion sends Authorization-Token; retain the existing test header.
-    supplied = authorization_token if authorization_token is not None else x_webhook_token
+    # Qonversion sends Basic followed by the raw configured token (not base64).
+    # Preserve existing clients, but a supplied Authorization header takes precedence.
+    if authorization is not None:
+        scheme, separator, value = authorization.partition(' ')
+        supplied = value if separator and scheme.lower() == 'basic' else None
+    else:
+        supplied = authorization_token if authorization_token is not None else x_webhook_token
     if len(expected) < 24 or not supplied or not hmac.compare_digest(supplied, expected):
         raise HTTPException(401, 'Unauthorized')
     apps = {a['key']: a for a in config_apps()}
