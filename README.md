@@ -491,6 +491,48 @@ For a country bar chart in Sheets: Insert → Chart; use `Country_Analysis` and 
 
 **Important accounting limitations:** `Charged Amount (processed)` is a current-state gross proxy (including tax), not settlement revenue, does not subtract partial refunds and excludes fully refunded orders. `Developer Revenue` applies only where Play provides that field and is not a substitute for Play earnings reports. Partial refunds are tracked separately; do not treat order `total` as cash recognized across a period. Aggregation of current order snapshots by create date is **not** a proper historical cashflow or month-end settlement report.
 
+### Báo cáo chi tiết: loại gói, quốc gia và Dashboard
+
+Sau khi deploy mã mới, bấm **Sync ngay**. Các tab hiện có tự mở rộng số cột/dòng, giữ các cột ban đầu, thêm tiêu đề nổi bật và bộ lọc. Không cần đổi Railway Variables nếu tên product/base plan đã thể hiện rõ loại gói.
+
+| Tab | Chi tiết bổ sung |
+|---|---|
+| Transactions | Plan Type, mã product:base-plan, nguồn phân loại, subscription/one-time, base plan, offer, tên sản phẩm, pricing phase, kỳ dịch vụ tại thời điểm đơn, tháng UTC, ngày local, lần xác minh cuối, thuế, sự kiện Qonversion gần nhất và quốc gia IP riêng. |
+| Country_Analysis | Tổng đơn, mọi trạng thái, số gói tuần/tháng/năm/lifetime/unknown/mixed, số biến thể gói, tiền trung bình, số đơn có dữ liệu tiền, đơn có tiền lớn hơn 0, đơn 0 đồng, trial và ngày giao dịch đầu/cuối. |
+| Product_Analysis | Tách theo app + product + currency + loại gói + mã plan cụ thể. Có đơn hủy, hoàn một phần, chờ hoàn, doanh thu Google cung cấp, tổng đơn, số quốc gia, dữ liệu tiền và trial. Các base plan khác nhau của cùng product không bị gộp. |
+| Dashboard | Tổng đơn và trạng thái, loại gói, quốc gia, app; số webhook production/sandbox/unknown; mã GPA chưa xác minh; sự kiện thiếu mã; số sự kiện theo tên và loại gói; thông tin sync; số tiền theo app/currency/tháng/loại gói. |
+
+**Cách xác định loại gói**
+
+`WEEKLY` = tuần, `MONTHLY` = tháng, `YEARLY` = năm, `LIFETIME` = trọn đời. `UNKNOWN` là chưa đủ dữ liệu; `MIXED` là một đơn có nhiều loại gói. Ưu tiên product và basePlanId từ đơn Google Play; nếu thiếu base plan và chỉ có một product, có thể dùng product_id của webhook cùng mã đơn và cùng store product, loại trừ sandbox/test. Không suy ra lifetime chỉ vì đây là sản phẩm mua một lần.
+
+Tên ID có token week/weekly, month/monthly, year/yearly/annual/annually hoặc lifetime được phân loại theo quy ước đặt tên và đánh dấu **Inferred from ID naming**. Ví dụ `premium_subscription:premium-weekly-auto` được nhận là WEEKLY. Đây là suy luận từ tên ID, không phải xác nhận chu kỳ từ catalog.
+
+Nếu ID không thể hiện rõ chu kỳ, thêm mapping chính xác trong cấu hình app. Với Railway, chỉnh `APPS_CONFIG_YAML` rồi redeploy; local chỉnh `config/apps.yaml`. Dùng ID thật của app, ví dụ:
+
+```yaml
+apps:
+  - key: cute_keyboard
+    package_name: com.emoji.cutekeyboard.themes.fontkeyboard
+    product_plan_types:
+      "premium_subscription:premium-weekly-auto": WEEKLY
+      "YOUR_YEARLY_PRODUCT:YOUR_YEARLY_BASE_PLAN": YEARLY
+      "YOUR_LIFETIME_PRODUCT": LIFETIME
+```
+
+Mapping này chỉ phục vụ phân loại báo cáo, không thay đổi mua hàng hoặc xác minh đơn. Thay các ID YOUR_... bằng ID thật; giữ các cấu hình khác đang dùng.
+
+**Cách đọc số liệu**
+
+- Transactions/Country_Analysis/Product_Analysis vẫn chỉ chứa đơn đã xác minh. Dashboard có thêm đếm sự kiện sandbox riêng để kiểm tra luồng webhook; không cộng sandbox vào số tiền.
+- Dashboard có dòng tổng `Order Month UTC = ALL`, dòng từng tháng và `Plan Type = ALL`/từng loại gói. Các mức này chồng nhau: lọc App, Currency, tháng và loại gói trước khi SUM hoặc vẽ biểu đồ. Số tiền không có tổng đa tiền tệ.
+- Phân tích tháng dựa trên tháng tạo đơn UTC và trạng thái hiện tại; không phải lịch sử dòng tiền hoặc báo cáo quyết toán. Ngày local trong Transactions dùng TZ, mặc định Asia/Bangkok (UTC+7).
+- Charged Amount chỉ cộng đơn PROCESSED; Developer Revenue chỉ cộng PROCESSED/PARTIALLY_REFUNDED có giá trị Google cung cấp. Tiền thiếu để trống ở giao dịch; tổng được tính từ giá trị đã biết và có cột số đơn có dữ liệu. Tiền trung bình chia cho số đơn processed có giá trị, không coi tiền thiếu là 0.
+- PROCESSED có thể có số tiền 0: xem riêng Processed Positive Amount Orders, Processed Zero Amount Orders và Free Trial Phase Orders. Trial chỉ đếm khi Google có pricing phase tương ứng.
+- Số đơn và số sự kiện không phải số người đăng ký duy nhất. Subscription canceled là sự kiện vòng đời; không tự đổi trạng thái đơn đã thanh toán thành CANCELED.
+- Service Period End là snapshot của kỳ được đơn chi trả, không xác nhận thuê bao hiện còn active. Không xuất purchase token, user ID, email hoặc raw payload vào các cột mới.
+- Qonversion_Events vẫn chỉ hiển thị 20.000 sự kiện gần nhất; thống kê và liên kết sự kiện của báo cáo lấy toàn bộ sự kiện lưu trong database.
+
 ## 6. How to inspect data
 
 ```bash
@@ -525,4 +567,4 @@ python -m unittest discover -s tests -v
 
 This code reads order data (`orders.get`), does **not** issue refunds, change subscription state or call mutating Play APIs. No Qonversion API key is required for webhook-received events. The scheduler uses one Uvicorn worker; running multiple replicas creates overlapping schedulers, so use an external scheduler/leader election if scaling out.
 
-Validation: 21 local tests pass, including HTTP webhook authentication, event persistence, duplicate responses and manual sync. Live Qonversion delivery and Google Play/Sheets integration still require validation after deployment.
+Validation: 28 local tests pass, including HTTP webhook authentication, event persistence, duplicate responses and manual sync. Live Qonversion delivery and Google Play/Sheets integration still require validation after deployment.

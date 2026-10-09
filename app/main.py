@@ -8,7 +8,6 @@ import logging
 import os
 import sqlite3
 import threading
-from collections import defaultdict
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -24,6 +23,8 @@ from fastapi.responses import HTMLResponse
 from google.auth.transport.requests import AuthorizedSession
 from google.oauth2 import service_account
 
+from app.reports import build_reports, EXTRA_GROUP_HEADERS, PLANS
+
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger('iap')
 DB = os.getenv('DB_PATH', '/data/iap.sqlite3')
@@ -37,6 +38,17 @@ SHEETS_HEADERS = {
     'Sync_Log': ['Last Run UTC', 'Result', 'Details'],
     'Qonversion_Events': ['App', 'Event Time UTC', 'Event', 'Order ID', 'Product', 'Qonversion Country (IP)', 'Environment', 'Event Key'],
 }
+
+SHEETS_HEADERS['Transactions'] += ['Plan Type', 'Plan Identifier', 'Plan Type Source', 'Purchase Kind',
+    'Base Plan ID', 'Offer ID', 'Product Title', 'Pricing Phase', 'Service Period Start UTC (snapshot)',
+    'Service Period End UTC (snapshot)', 'Order Month UTC', 'Order Date Local', 'Last Checked UTC',
+    'Last Google Event UTC', 'Tax (order currency)', 'Latest Qonversion Event', 'Latest Qonversion Event UTC',
+    'Qonversion Country (IP)']
+SHEETS_HEADERS['Country_Analysis'] += EXTRA_GROUP_HEADERS + [p + ' Orders' for p in PLANS] + ['Plan Variants']
+SHEETS_HEADERS['Product_Analysis'] += ['Plan Type', 'Plan Identifier', 'Canceled Orders', 'Partially Refunded Orders',
+    'Developer Revenue (processed and partially refunded)'] + EXTRA_GROUP_HEADERS + ['Buyer Countries']
+SHEETS_HEADERS['Dashboard'] += ['App', 'Currency', 'Order Month UTC', 'Plan Type', 'Notes']
+
 
 
 def utc_now():
@@ -194,60 +206,30 @@ def export_sheets():
     spreadsheet = gspread.authorize(creds()).open_by_key(os.environ['SHEET_ID'])
     with database() as db:
         orders = [dict(row) for row in db.execute('SELECT * FROM orders ORDER BY order_date DESC')]
-        events = [dict(row) for row in db.execute('SELECT * FROM events ORDER BY received_at DESC LIMIT 20000')]
+        events = [dict(row) for row in db.execute('''SELECT app_key, order_id, event_time, event_name,
+            product_id, country_ip, environment, event_key, received_at FROM events ORDER BY received_at DESC''')]
         syncs = [dict(row) for row in db.execute('SELECT * FROM sync_log ORDER BY id DESC LIMIT 100')]
-    event_counts = defaultdict(int)
-    for e in events:
-        if e['environment'].lower() in ('sandbox', 'test'):
-            continue
-        if e['order_id']:
-            event_counts[(e['app_key'], e['order_id'])] += 1
-    transactions = []
-    countries = defaultdict(lambda: defaultdict(int))
-    products = defaultdict(lambda: defaultdict(int))
-    for o in orders:
-        key = (o['app_key'], o['country'] or 'UNKNOWN', o['currency'] or 'UNKNOWN')
-        prod_key = (o['app_key'], o['product'] or 'UNKNOWN', o['currency'] or 'UNKNOWN')
-        status = o['state']
-        for group, index in ((countries, key), (products, prod_key)):
-            group[index][status] += 1
-        if status == 'PROCESSED':
-            countries[key]['charged'] += Decimal(o['charged'] or '0')
-            products[prod_key]['charged'] += Decimal(o['charged'] or '0')
-        if status in ('PROCESSED', 'PARTIALLY_REFUNDED') and o['developer_revenue'] != '':
-            countries[key]['revenue'] += Decimal(o['developer_revenue'] or '0')
-        transactions.append([o['app_key'], o['order_id'], o['order_date'], o['country'], o['product'], status,
-                             o['currency'], o['charged'], o['developer_revenue'], 'YES', event_counts[(o['app_key'], o['order_id'])]])
-    country_rows = [[*k, v['PROCESSED'], v['PENDING'], v['CANCELED'], v['REFUNDED'],
-                     v['PARTIALLY_REFUNDED'], float(v['charged']), float(v['revenue'])] for k, v in sorted(countries.items())]
-    product_rows = [[*k, v['PROCESSED'], v['PENDING'], v['REFUNDED'], float(v['charged'])] for k, v in sorted(products.items())]
-    dashboard = [
-        ['Last export UTC', utc_now()], ['Applications', len(config_apps())],
-        ['Orders verified', len(orders)], ['Pending orders', sum(o['state']=='PENDING' for o in orders)],
-        ['Processed orders', sum(o['state']=='PROCESSED' for o in orders)],
-        ['Refunded orders', sum(o['state']=='REFUNDED' for o in orders)],
-        ['Note', 'Amounts stay in original currencies; no cross-currency sums.'],
-        ['Note', 'Order data = verified known IDs only; not full Play order population.'],
-    ]
-    tables = {
-        'Transactions': transactions,
-        'Country_Analysis': country_rows,
-        'Product_Analysis': product_rows,
-        'Dashboard': dashboard,
-        'Sync_Log': [[s['ran_at'], s['result'], s['detail']] for s in syncs],
-        'Qonversion_Events': [[e['app_key'], e['event_time'], e['event_name'], e['order_id'],
-                              e['product_id'], e['country_ip'], e['environment'], e['event_key']] for e in events]
-    }
+    tables = build_reports(orders, events, syncs, config_apps(), utc_now(), os.getenv('TZ', 'Asia/Bangkok'))
+    tables['Sync_Log'] = [[s['ran_at'], s['result'], s['detail']] for s in syncs]
+    tables['Qonversion_Events'] = [[e['app_key'], e['event_time'], e['event_name'], e['order_id'],
+        e['product_id'], e['country_ip'], e['environment'], e['event_key']] for e in events[:20000]]
     for name, header in SHEETS_HEADERS.items():
         try:
             ws = spreadsheet.worksheet(name)
         except gspread.WorksheetNotFound:
             ws = spreadsheet.add_worksheet(title=name, rows=100, cols=max(12, len(header)))
         values = [header] + [[c if isinstance(c, (float, int)) and not isinstance(c, bool) else sheet_safe(c) for c in row] for row in tables[name]]
+        # Existing tabs may have only 12 columns; expand before writing the richer report.
+        if ws.row_count < len(values) or ws.col_count < len(header):
+            ws.resize(rows=max(ws.row_count, len(values)), cols=max(ws.col_count, len(header)))
         # Full snapshot replacement eliminates duplicate rows and stale values.
         ws.clear()
         ws.update(range_name='A1', values=values, value_input_option='RAW')
         ws.freeze(rows=1)
+        ws.format('1:1', {'textFormat': {'bold': True},
+            'backgroundColor': {'red': 0.88, 'green': 0.93, 'blue': 1.0}})
+        if name in ('Transactions', 'Country_Analysis', 'Product_Analysis', 'Dashboard'):
+            ws.set_basic_filter(f'A1:{gspread.utils.rowcol_to_a1(max(2, len(values)), len(header))}')
     return f'Exported orders={len(orders)}, events={len(events)}'
 
 
