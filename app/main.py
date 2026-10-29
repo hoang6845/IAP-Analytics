@@ -23,7 +23,7 @@ from fastapi.responses import HTMLResponse
 from google.auth.transport.requests import AuthorizedSession
 from google.oauth2 import service_account
 
-from app.report_columns import DESCRIPTION_HEADERS, description_rows, display_headers, display_rows
+from app.report_columns import DESCRIPTION_HEADERS, description_rows, display_headers, display_rows, localized_headers, VI_LABELS, column_letter as main_column_letter
 from app.reports import build_reports, EXTRA_GROUP_HEADERS, PLANS, USER_HEADERS
 from app.ua_reports import UA_HEADERS
 
@@ -231,19 +231,27 @@ def export_sheets():
         e['product_id'], e['country_ip'], e['environment'], e['event_key'],
         e.get('user_id') or '', e.get('custom_user_id') or '', e.get('identity_id') or ''] for e in events[:20000]]
     tables['Description'] = description_rows(EXPORT_HEADERS)
+    for row in tables['Description']:
+        row[1] = VI_LABELS[row[1]]
     format_requests = []
     for index, (name, header) in enumerate(EXPORT_HEADERS.items()):
         try:
             ws = spreadsheet.worksheet(name)
         except gspread.WorksheetNotFound:
             ws = spreadsheet.add_worksheet(title=name, rows=100, cols=max(12, len(header)))
-        values = [header] + [[c if isinstance(c, (float, int)) and not isinstance(c, bool) else sheet_safe(c) for c in row] for row in display_rows(tables[name], SHEETS_HEADERS[name], header)]
+        values = [localized_headers(header)] + [[c if isinstance(c, (float, int)) and not isinstance(c, bool) else sheet_safe(c) for c in row] for row in display_rows(tables[name], SHEETS_HEADERS[name], header)]
         # Existing tabs may have only 12 columns; expand before writing the richer report.
         if ws.row_count < len(values) or ws.col_count < len(header):
             ws.resize(rows=max(ws.row_count, len(values)), cols=max(ws.col_count, len(header)))
-        # Full snapshot replacement eliminates duplicate rows and stale values.
-        ws.clear()
+        # Write first: a failed update must not leave the existing report empty.
         ws.update(range_name='A1', values=values, value_input_option='RAW')
+        stale_ranges = []
+        if ws.row_count > len(values):
+            stale_ranges.append(f'A{len(values) + 1}:{main_column_letter(ws.col_count)}{ws.row_count}')
+        if ws.col_count > len(header):
+            stale_ranges.append(f'{main_column_letter(len(header) + 1)}1:{main_column_letter(ws.col_count)}{len(values)}')
+        if stale_ranges:
+            ws.batch_clear(stale_ranges)
         # Batch presentation changes to avoid one extra API write per operation/tab.
         format_requests += [
             {'updateSheetProperties': {'properties': {'sheetId': ws.id, 'index': index,

@@ -154,71 +154,128 @@ def description_rows(headers):
                     'Unattributed Verified Orders', 'Observed Trial Episodes', 'Mature Trial Episodes (7d after end)',
                     'Immature Trial Episodes', 'Unknown Trial End Episodes', 'Missing Chain Episodes',
                     'Verified Conversions within 7d after Trial End'):
-                missing = '0 khi kh?ng c? b?n ghi ?? ?i?u ki?n trong d? li?u quan s?t; kh?ng ch?ng minh to?n b? l?ch s? b?ng 0.'
+                missing = '0 khi không có bản ghi đủ điều kiện trong dữ liệu đã nhận; không khẳng định toàn bộ lịch sử bằng 0.'
             if column == 'Trial to Paid 7d Rate':
-                missing = 'N/A khi ch?a ?? d? li?u/coverage/th?i gian. Khi AVAILABLE, 0 l? t? l? quan s?t b?ng 0.'
+                missing = 'N/A khi chưa đủ dữ liệu hoặc thời gian theo dõi. Khi AVAILABLE, 0 là tỷ lệ quan sát bằng 0.'
             if 'Amount' in column or 'Revenue' in column or column == 'Tax (order currency)':
                 note += ' Tiền theo currency của dòng; không cộng đa tiền tệ. Số Known Orders là số đếm, không phải tiền.'
             rows.append([tab, column, column_letter(index), meaning, source, scope, missing, note.strip()])
     return rows
 # Reorder presentation only; report calculations keep their existing canonical schemas.
-COLUMN_PRIORITY = {
-    'Transactions': ['App', 'User ID', 'Plan Type', 'Plan Identifier', 'Order Date Local',
-        'Charged Amount', 'Currency', 'Developer Revenue', 'State', 'Country (buyer)',
-        'Product Title', 'Order ID', 'Latest Qonversion Event'],
-    'Country_Analysis': ['App', 'Country (buyer)', 'Currency', 'Total Orders',
-        'Charged Amount (processed)', 'Developer Revenue (processed and partially refunded)',
-        'Average Charged (processed, known amounts)', 'Processed Positive Amount Orders',
-        'WEEKLY Orders', 'MONTHLY Orders', 'YEARLY Orders', 'LIFETIME Orders',
-        'Processed Orders', 'Refunded Orders', 'Partially Refunded Orders'],
+# Explicit export projection: new internal metrics must not silently widen Sheets.
+# Keep every grouping dimension so distinct rows remain distinguishable.
+# Five decision metrics: buyers, payments, renewals, refunds and collected money.
+# Grouping keys stay visible: hiding them would make different rows look identical.
+CORE_METRICS = ['Observed Payers', 'Verified Payment Orders',
+    'Verified Renewal Payment Orders', 'Refunded Payment Orders',
+    'Charged Amount (processed)']
+COMPACT_COLUMNS = {
+    'Dashboard': ['App', 'Currency'] + CORE_METRICS,
+    'Plan_Comparison': ['App', 'Plan Type', 'Plan Identifier', 'Offer ID',
+        'Country (buyer)', 'Currency'] + CORE_METRICS,
+    'Trial_Cohorts': ['App', 'Trial Start Week UTC', 'Plan Type', 'Plan Identifier',
+        'Offer ID', 'Country (buyer)', 'Currency',
+        'Mature Trial Episodes (7d after end)', 'Verified Conversions within 7d after Trial End',
+        'Trial to Paid 7d Rate', 'Conversion Rate Status'],
+    'Users': ['App', 'User ID', 'Payment Count', 'Currency', 'Plan Identifiers',
+        'Charged Amount (processed)', 'Refunded Paid Orders', 'User Link Status'],
+    'Transactions': ['App', 'User ID', 'Plan Identifier', 'Order Date Local',
+        'Country (buyer)', 'Currency', 'Charged Amount', 'State', 'Order ID'],
+    'Country_Analysis': ['App', 'Country (buyer)', 'Currency',
+        'Processed Positive Amount Orders', 'Refunded Orders', 'Charged Amount (processed)'],
     'Product_Analysis': ['App', 'Plan Type', 'Plan Identifier', 'Product', 'Currency',
-        'Total Orders', 'Charged Amount (processed)', 'Developer Revenue (processed and partially refunded)',
-        'Average Charged (processed, known amounts)', 'Processed Positive Amount Orders',
-        'Processed Orders', 'Refunded Orders', 'Partially Refunded Orders', 'Buyer Countries'],
-    'Users': ['App', 'User ID', 'Payment Count', 'Currency',
-        'Payment Order Face Amount (includes refunded)', 'Charged Amount (processed)',
-        'Developer Revenue (processed and partially refunded)', 'Plan Types', 'Plan Identifiers',
-        'First Payment UTC', 'Last Payment UTC', 'Total Verified Orders',
-        'Processed Paid Orders', 'Refunded Paid Orders', 'Partially Refunded Paid Orders',
-        'Pending Refund Paid Orders', 'Buyer Countries', 'User Link Status'],
-    'Dashboard': ['Metric', 'Value', 'App', 'Currency', 'Order Month UTC', 'Plan Type', 'Notes'],
+        'Processed Positive Amount Orders', 'Refunded Orders', 'Charged Amount (processed)'],
+    'User_Timeline': ['App', 'User ID', 'Time Local', 'Action',
+        'Plan Identifier', 'Charged Amount', 'Currency', 'State', 'Environment', 'Order ID'],
     'Qonversion_Events': ['App', 'User ID', 'Event', 'Product', 'Environment', 'Event Time UTC', 'Order ID'],
+    'Data_Quality': ['App', 'Severity', 'Issue', 'Count', 'Details'],
+    'Diagnostics': ['Metric', 'Value', 'App', 'Currency', 'Order Month UTC', 'Plan Type', 'Notes'],
     'Sync_Log': ['Last Run UTC', 'Result', 'Details'],
-    'Description': ['Tab', 'Column', 'Meaning', 'Source', 'Unit / Scope', 'Missing Values', 'Notes', 'Column Letter'],
+    'Description': ['Tab', 'Column', 'Meaning', 'Missing Values'],
 }
-COLUMN_TAIL = {
-    'Transactions': ['Product', 'Date UTC', 'Order Month UTC', 'Purchase Kind', 'Base Plan ID', 'Offer ID',
-        'Plan Type Source', 'User Link Status', 'Google Verified', 'Qonversion Events',
-        'Qonversion Country (IP)', 'Latest Qonversion Event UTC', 'Last Google Event UTC', 'Last Checked UTC'],
-    'Country_Analysis': ['Other State Orders', 'Processed Amount Known Orders',
-        'Developer Revenue Known Orders', 'First Order UTC', 'Last Order UTC', 'Last Checked UTC'],
-    'Product_Analysis': ['Other State Orders', 'Processed Amount Known Orders',
-        'Developer Revenue Known Orders', 'First Order UTC', 'Last Order UTC', 'Last Checked UTC'],
-    'Users': ['Processed Amount Known Orders', 'Developer Revenue Known Orders', 'First Order UTC',
-        'Last Order UTC', 'Last Checked UTC', 'Production Events (user, all currencies)',
-        'Sandbox/Test Events (user, all currencies)', 'Unknown Environment Events (user, all currencies)',
-        'Non-Sandbox IDs Without Verified Order (user, all currencies)', 'Custom User IDs', 'Identity IDs',
-        'Verified Order IDs', 'First Webhook Received UTC', 'Last Webhook Received UTC', 'Notes'],
-    'Qonversion_Events': ['Qonversion Country (IP)', 'Custom User IDs', 'Identity IDs', 'Event Key'],
-}
-
-
-COLUMN_PRIORITY['Diagnostics'] = COLUMN_PRIORITY['Dashboard'][:]
-COLUMN_PRIORITY['Dashboard'] = ['App', 'Currency', 'Observed Payers', 'Verified Payment Orders',
-    'Trial Users (observed)', 'Trial Orders', 'Charged Amount (processed)',
-    'Developer Revenue (processed and partially refunded)', 'Repeat Payment Users (observed)']
 
 
 def display_headers(headers):
     result = {}
     for tab, columns in headers.items():
-        first, last = COLUMN_PRIORITY.get(tab, []), COLUMN_TAIL.get(tab, [])
-        if len(set(first + last)) != len(first + last) or any(c not in columns for c in first + last):
+        selected = COMPACT_COLUMNS[tab]
+        if len(set(selected)) != len(selected) or any(c not in columns for c in selected):
             raise ValueError('Invalid column layout for ' + tab)
-        result[tab] = first + [c for c in columns if c not in first and c not in last] + last
+        result[tab] = selected[:]
     return result
 
 
 def display_rows(rows, source_headers, target_headers):
     positions = [source_headers.index(column) for column in target_headers]
     return [[row[index] for index in positions] for row in rows]
+
+# Vietnamese labels are presentation only; canonical keys remain stable.
+VI_LABELS = {
+    'App': 'Ứng dụng',
+    'Currency': 'Tiền tệ',
+    'As Of Local': 'Cập nhật lúc (giờ địa phương)',
+    'Observed Payers': 'Người đã trả tiền',
+    'Trial Users (observed)': 'Người dùng thử',
+    'Verified Payment Orders': 'Lượt thanh toán',
+    'Verified Renewal Payment Orders': 'Lượt gia hạn',
+    'Refunded Payment Orders': 'Lượt hoàn tiền toàn bộ',
+    'Charged Amount (processed)': 'Tiền thu từ đơn thành công',
+    'Developer Revenue (processed and partially refunded)': 'Doanh thu nhà phát triển (Google báo)',
+    'Notes': 'Lưu ý',
+    'Plan Type': 'Loại gói',
+    'Plan Identifier': 'Mã gói',
+    'Offer ID': 'Mã ưu đãi',
+    'Country (buyer)': 'Quốc gia người mua',
+    'Trial Start Week UTC': 'Tuần bắt đầu dùng thử (UTC)',
+    'Observed Trial Episodes': 'Số kỳ dùng thử',
+    'Mature Trial Episodes (7d after end)': 'Kỳ đã đủ thời gian theo dõi',
+    'Verified Conversions within 7d after Trial End': 'Kỳ chuyển sang trả tiền',
+    'Trial to Paid 7d Rate': 'Tỷ lệ dùng thử sang trả tiền',
+    'Conversion Rate Status': 'Độ đầy đủ dữ liệu chuyển đổi',
+    'User ID': 'Mã người dùng',
+    'Payment Count': 'Số lần thanh toán',
+    'Plan Identifiers': 'Các mã gói đã mua',
+    'Refunded Paid Orders': 'Lượt hoàn toàn bộ',
+    'Partially Refunded Paid Orders': 'Lượt hoàn một phần',
+    'Pending Refund Paid Orders': 'Lượt chờ hoàn tiền',
+    'First Payment UTC': 'Lần trả tiền đầu (UTC)',
+    'Last Payment UTC': 'Lần trả tiền gần nhất (UTC)',
+    'User Link Status': 'Tình trạng xác định người dùng',
+    'Order Date Local': 'Ngày giao dịch (giờ địa phương)',
+    'Charged Amount': 'Số tiền trên đơn',
+    'Developer Revenue': 'Doanh thu nhà phát triển',
+    'State': 'Trạng thái đơn',
+    'Pricing Phase': 'Giai đoạn giá',
+    'Order ID': 'Mã đơn hàng',
+    'Processed Positive Amount Orders': 'Đơn thành công có thu tiền',
+    'Free Trial Phase Orders': 'Đơn dùng thử miễn phí',
+    'Refunded Orders': 'Đơn hoàn toàn bộ',
+    'Partially Refunded Orders': 'Đơn hoàn một phần',
+    'Pending Refund Orders': 'Đơn chờ hoàn tiền',
+    'Processed Amount Known Orders': 'Đơn thành công có dữ liệu tiền thu',
+    'Developer Revenue Known Orders': 'Đơn có dữ liệu doanh thu',
+    'Product': 'Mã sản phẩm',
+    'Time Local': 'Thời điểm (giờ địa phương)',
+    'Row Type': 'Loại bản ghi',
+    'Action': 'Hoạt động',
+    'Environment': 'Môi trường',
+    'Event': 'Sự kiện',
+    'Event Time UTC': 'Thời điểm sự kiện (UTC)',
+    'Severity': 'Mức độ',
+    'Issue': 'Vấn đề dữ liệu',
+    'Count': 'Số lượng',
+    'Details': 'Chi tiết',
+    'Metric': 'Chỉ số',
+    'Value': 'Giá trị',
+    'Order Month UTC': 'Tháng giao dịch (UTC)',
+    'Last Run UTC': 'Lần đồng bộ (UTC)',
+    'Result': 'Kết quả',
+    'Tab': 'Trang báo cáo',
+    'Column': 'Tên cột',
+    'Meaning': 'Ý nghĩa',
+    'Missing Values': 'Khi thiếu dữ liệu',
+}
+
+
+def localized_headers(columns):
+    return [VI_LABELS[column] for column in columns]

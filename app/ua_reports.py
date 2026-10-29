@@ -24,7 +24,7 @@ UA_HEADERS = {
     'Data_Quality': ['App', 'Severity', 'Issue', 'Count', 'Details'],
 }
 UA_MEANINGS = {
-    'As Of Local': 'Th?i ?i?m t?o snapshot b?o c?o theo TZ c?u h?nh; kh?ng ph?i ng?y ph?t sinh giao d?ch.',
+    'As Of Local': 'Thời điểm tạo báo cáo theo múi giờ cấu hình; không phải ngày phát sinh giao dịch.',
     'Observed Users': 'Số user_id khác nhau liên kết được với các đơn trong nhóm; không phải toàn bộ user cài app.',
     'Observed Payers': 'Số user_id có ít nhất một đơn xác minh charged > 0, gồm cả đơn đã hoàn; chỉ tính user liên kết rõ.',
     'Verified Payment Orders': 'Số đơn xác minh charged > 0 và trạng thái đã thanh toán, gồm PROCESSED/REFUNDED/PARTIALLY_REFUNDED/PENDING_REFUND.',

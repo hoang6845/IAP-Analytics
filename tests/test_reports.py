@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock, create_autospec, patch
 from app import main
+from app.report_columns import localized_headers, VI_LABELS
 from app.reports import build_reports, classify
 
 NOW = '2026-10-09T03:00:00+00:00'
@@ -129,7 +130,7 @@ class ReportsTest(unittest.TestCase):
             worksheets = {}
             for name in main.SHEETS_HEADERS:
                 ws = create_autospec(main.gspread.Worksheet, instance=True)
-                ws.row_count, ws.col_count = 100, 12
+                ws.row_count, ws.col_count = 100, 10
                 worksheets[name] = ws
             sheet.worksheet.side_effect = lambda name: worksheets[name]
             with patch.object(main, 'DB', os.path.join(temp, 'db.sqlite3')), patch.object(main, 'creds'), \
@@ -147,33 +148,59 @@ class ReportsTest(unittest.TestCase):
                 with main.database() as db:
                     db.execute('''INSERT INTO events(event_key,app_key,order_id,event_time,event_name,product_id,country_ip,environment,raw_json,received_at)
                         VALUES(?,?,?,?,?,?,?,?,?,?)''', ('user-event', 'app', 'GPA.1', NOW, 'subscription_started', 'premium', 'VN', 'production',
-                        json.dumps({'user_id': 'QON_saved', 'custom_user_id': '=UNSAFE()', 'identity_id': 'identity-saved', 'transaction': {'original_transaction_id': 'GPA.root'}}), NOW))
+                        json.dumps({'user_id': '=UNSAFE()', 'custom_user_id': '=UNSAFE()', 'identity_id': 'identity-saved', 'transaction': {'original_transaction_id': 'GPA.root'}}), NOW))
+                with main.database() as db:
+                    before = {table: [tuple(r) for r in db.execute('SELECT * FROM ' + table)] for table in ('orders', 'events')}
+                main.export_sheets()
+                with main.database() as db:
+                    after = {table: [tuple(r) for r in db.execute('SELECT * FROM ' + table)] for table in ('orders', 'events')}
+                self.assertEqual(before, after)
+                for ws in worksheets.values():
+                    ws.reset_mock()
+                main.export_sheets()  # Repeated sync preserves data and layout.
+                tx_ws = worksheets['Transactions']
+                tx_ws.reset_mock()
+                tx_ws.update.side_effect = RuntimeError('write failed')
+                with self.assertRaisesRegex(RuntimeError, 'write failed'):
+                    main.export_sheets()
+                tx_ws.clear.assert_not_called()
+                tx_ws.batch_clear.assert_not_called()
+                tx_ws.update.side_effect = None
+                for ws in worksheets.values():
+                    ws.reset_mock()
                 main.export_sheets()
             tx = worksheets['Transactions']
-            tx.resize.assert_called_once()
+            tx.resize.assert_not_called()
             data = tx.update.call_args.kwargs['values']
-            self.assertEqual(data[1][data[0].index('Charged Amount')], 10)
-            title_index = data[0].index('Product Title')
-            self.assertEqual(data[1][title_index], "'=BAD()")
+            self.assertEqual(data[1][data[0].index(VI_LABELS['Charged Amount'])], 10)
+            self.assertNotIn('Product Title', data[0])
+            self.assertEqual(data[1][data[0].index(VI_LABELS['User ID'])], "'=UNSAFE()")
             self.assertEqual(tx.update.call_args.kwargs['value_input_option'], 'RAW')
-            self.assertEqual(data[0][:3], ['App', 'User ID', 'Plan Type'])
-            self.assertEqual(data[0][-1], 'Last Checked UTC')
+            self.assertEqual(data[0][:3], localized_headers(['App', 'User ID', 'Plan Identifier']))
+            self.assertNotIn('Last Checked UTC', data[0])
             users_data = worksheets['Users'].update.call_args.kwargs['values']
-            self.assertEqual(users_data[1][users_data[0].index('User ID')], 'QON_saved')
-            self.assertEqual(users_data[1][users_data[0].index('Payment Count')], 1)
-            self.assertEqual(users_data[1][users_data[0].index('Custom User IDs')], "'=UNSAFE()")
+            self.assertEqual(users_data[1][users_data[0].index(VI_LABELS['User ID'])], "'=UNSAFE()")
+            self.assertEqual(users_data[1][users_data[0].index(VI_LABELS['Payment Count'])], 1)
+            self.assertNotIn('Custom User IDs', users_data[0])
             description_data = worksheets['Description'].update.call_args.kwargs['values']
-            self.assertEqual(len(description_data), 1 + sum(len(cols) for cols in main.SHEETS_HEADERS.values()))
-            worksheets['Description'].resize.assert_called_once()
-            sheet.batch_update.assert_called_once()
+            self.assertEqual(len(description_data), 1 + sum(len(cols) for cols in main.EXPORT_HEADERS.values()))
+            self.assertEqual(worksheets['Description'].resize.call_count, int(len(description_data) > 100))
+            self.assertEqual(sheet.batch_update.call_count, 3)
             formatting = sheet.batch_update.call_args.args[0]['requests']
             self.assertEqual(len([r for r in formatting if 'updateSheetProperties' in r]), len(main.EXPORT_HEADERS))
             self.assertEqual([r['updateSheetProperties']['properties']['index'] for r in formatting if 'updateSheetProperties' in r], list(range(len(main.EXPORT_HEADERS))))
             self.assertTrue(any(r.get('repeatCell', {}).get('cell', {}).get('userEnteredFormat', {}).get('numberFormat', {}).get('type') == 'PERCENT' for r in formatting))
             desc = [dict(zip(description_data[0], row)) for row in description_data[1:]]
-            user_column = next(row for row in desc if row['Tab'] == 'Transactions' and row['Column'] == 'User ID')
-            self.assertEqual(user_column['Column Letter'], 'B')
-            self.assertEqual(users_data[0][:3], ['App', 'User ID', 'Payment Count'])
+            user_column = next(row for row in desc if row[VI_LABELS['Tab']] == 'Transactions' and row[VI_LABELS['Column']] == VI_LABELS['User ID'])
+            self.assertTrue(user_column[VI_LABELS['Meaning']])
+            self.assertEqual({(r[VI_LABELS['Tab']], r[VI_LABELS['Column']]) for r in desc},
+                {(tab, VI_LABELS[col]) for tab, cols in main.EXPORT_HEADERS.items() for col in cols})
+            for name, ws in worksheets.items():
+                ws.clear.assert_not_called()
+                exported = ws.update.call_args.kwargs['values']
+                self.assertEqual(exported[0], localized_headers(main.EXPORT_HEADERS[name]))
+                self.assertTrue(all(len(row) == len(exported[0]) for row in exported))
+            self.assertEqual(users_data[0][:3], localized_headers(['App', 'User ID', 'Payment Count']))
 
 
 if __name__ == '__main__':

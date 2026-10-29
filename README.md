@@ -1,5 +1,7 @@
 # IAP Analytics — Qonversion → Google Play → Google Sheets
 
+**Dành cho UA:** [Hướng dẫn đọc Sheet bằng tiếng Việt](HUONG_DAN_DOC_SHEET.md). Deploy code mới trên Railway, giữ volume dữ liệu và SHEET_ID, rồi Sync ngay để cập nhật cột trên Sheet hiện tại.
+
 ## Hướng dẫn setup local và deploy Railway
 
 ### 1. Thiết lập Google từng bước
@@ -588,6 +590,74 @@ analytics_coverage_start_utc: "2026-10-01T00:00:00Z" # Ví dụ; chỉ đặt ng
 Không dùng ngày webhook đầu tiên nhận được làm bằng chứng coverage. Cấu hình này là khai báo độ đầy đủ dữ liệu cho phân tích, không tự tải lịch sử và không thay đổi xử lý giao dịch. Những cohort bắt đầu trước coverage vẫn N/A.
 
 **Dữ liệu UA chưa có:** installs, paywall views, checkout, network/campaign/creative, spend và A/B variant chưa có nguồn nhập. Data_Quality ghi rõ các giới hạn; báo cáo không tự tính CAC/ROAS, install-to-trial hoặc active subscribers từ số event. Các chỉ số đó cần pipeline dữ liệu bổ sung, không thể suy ra từ Orders/webhook hiện tại.
+
+### Hướng dẫn đọc hằng ngày cho UA và PO
+
+Mục tiêu là trả lời ba câu hỏi: **bao nhiêu người thực sự trả tiền, gói nào chuyển trial thành tiền tốt hơn, và user tiếp tục thanh toán hay dừng ở đâu**. Trước khi so sánh, kiểm tra dữ liệu đủ và đúng phạm vi; không lấy số event làm số user.
+
+**Đọc nhanh trong 5–10 phút**
+
+1. **Data_Quality + Diagnostics:** xem coverage, đơn chưa xác minh, user/chain thiếu hoặc xung đột. Kiểm tra As Of Local trên Dashboard hoặc Last export UTC trên Diagnostics. Nếu snapshot cũ hoặc lỗi dữ liệu tăng, xử lý trước khi đánh giá gói.
+2. **Dashboard:** chọn App và Currency. Đọc Observed Payers, Verified Payment Orders, Trial Users, Trial Orders, Charged Amount và Developer Revenue. Phân biệt tăng số trial với tăng người trả tiền; PROCESSED có thể là trial 0 đồng.
+3. **Plan_Comparison:** chọn cùng country/currency và đối chiếu các plan/offer. Xem số payer, số trial, thanh toán lặp lại và tiền. Đây là tổng lịch sử đã quan sát, chưa có bộ lọc ngày giao dịch ở tab này; không gọi nó là kết quả tuần này nếu chưa tính lại từ Transactions.
+4. **Trial_Cohorts:** chọn cùng tuần bắt đầu trial và quốc gia. Đọc Mature Trial Episodes trước, rồi Conversion Rate Status và Trial to Paid 7d Rate. Không so cohort trưởng thành với cohort còn nhiều trial chưa đủ thời gian.
+5. **Users → User_Timeline:** lọc User ID để xem số lần trả tiền và chuỗi trial → mua → gia hạn → hủy/hết hạn/hoàn. Phân biệt ORDER và EVENT; sự kiện hủy không tự đồng nghĩa hoàn tiền hoặc mất quyền truy cập ngay.
+6. **Transactions:** đối chiếu các trường hợp bất thường bằng mã đơn, charged, currency, pricing phase, offer và thời gian. Description giải thích chính xác mỗi cột; không sửa tay tab báo cáo vì sync sẽ ghi lại.
+
+**Các chỉ số nên quan tâm**
+
+| Chỉ số | Đọc ở đâu | Ý nghĩa và cách dùng |
+|---|---|---|
+| Observed Payers | Dashboard / Plan_Comparison | Số user đã có giao dịch có tiền và liên kết rõ. Dùng đánh giá quy mô khách trả tiền trong dữ liệu quan sát; không thay cho DAU hoặc active subscribers. |
+| Verified Payment Orders / Payment Count | Dashboard / Users | Số lần thanh toán bằng mã đơn duy nhất, có cả đơn sau đó được hoàn. Đối chiếu payer để biết tiền đến từ nhiều người hay nhiều lần mua của một người. |
+| Trial Users / Trial Orders | Dashboard / Plan_Comparison | User và kỳ trial đã quan sát. Hai chỉ số có thể khác nhau; trial nhiều chưa chứng minh gói tốt nếu chưa chuyển thành tiền. |
+| Mature Trial Episodes | Trial_Cohorts | Mẫu số có đủ 7 ngày quan sát sau trial kết thúc. Đọc cùng số trial chưa trưởng thành và dữ liệu thiếu để biết so sánh đã hợp lý chưa. |
+| Trial to Paid 7d Rate | Trial_Cohorts | Conversion đã xác minh / mature trial episodes, chỉ khi AVAILABLE. Dùng so cohort/gói/offer cùng điều kiện. N/A khác 0%. |
+| Repeat Payment Users (observed) | Dashboard / Plan_Comparison | User có ít nhất hai đơn có tiền trong nhóm. Hữu ích để tìm hành vi mua lặp lại; không phải renewal rate hoặc retention rate. |
+| Verified Renewal Payment Orders | Dashboard / Plan_Comparison | Đơn có tiền được webhook production đánh dấu subscription_renewed. Xem xu hướng khi lịch sử đủ; số lượng này chưa có mẫu số các thuê bao đến hạn để tính renewal rate. |
+| Charged Amount (processed) | Dashboard / Country / Product | Tổng tiền gốc gồm thuế của đơn đang PROCESSED. Dùng đối chiếu giao dịch; không phải lợi nhuận, không tính đúng toàn bộ tiền sau hoàn một phần. |
+| Developer Revenue | Dashboard / Country / Product | Giá trị Google cung cấp cho đơn PROCESSED/PARTIALLY_REFUNDED. Dùng thêm góc nhìn tiền developer, nhưng không thay báo cáo quyết toán. |
+| Original Paid Order Amount / Amount per Payer | Dashboard / Plan_Comparison | Tiền gốc gồm đơn đã hoàn; tiền/user chỉ là mức quan sát của lịch sử đã thu thập. Không gọi là LTV đầy đủ hoặc doanh thu ròng. |
+| Refunded Payment Orders | Dashboard / Plan_Comparison | Số đơn có tiền đã hoàn toàn bộ. Nếu tính tỷ lệ quan sát, chia cho Verified Payment Orders trong cùng nhóm; đơn mới chưa đủ thời gian phát sinh refund nên cần xem tuổi cohort. |
+| Unattributed Verified Orders | Dashboard / Plan_Comparison | Đơn có dữ liệu tài chính nhưng chưa gán rõ user. Số tiền và số payer có thể không cùng mức coverage; kiểm tra trước khi kết luận tiền/user. |
+
+**Ví dụ đọc đúng**
+
+- Gói A có 100 trial đã trưởng thành và 20 conversion, trạng thái AVAILABLE: rate 20%. Gói B có 100 trial nhưng chỉ 10 trưởng thành và 4 conversion: rate trên phần đã trưởng thành là 40%, chưa đủ cơ sở gọi B thắng vì mẫu nhỏ và 90 trial còn chưa quan sát xong.
+- User có một đơn đầu và hai mã đơn gia hạn có tiền: Payment Count = 3. Thêm một subscription_canceled event không làm thành 4 lần thanh toán. Nếu một đơn được hoàn, Payment Count vẫn là 3 và số đơn hoàn tăng.
+- User trả 10 USD rồi một đơn được hoàn toàn bộ: tiền gốc lịch sử vẫn có 10 USD; không diễn giải cột includes refunds thành số tiền giữ lại.
+- Gói năm thu trước một khoản lớn hơn gói tuần. Không chọn winner chỉ vì tổng tiền ngày đầu cao hơn; cần cùng tuổi cohort và cửa sổ theo dõi, cùng thị trường/offer, cùng cơ sở currency. Không gọi mua lặp lại trong 30 ngày là retention tương đương cho cả hai gói.
+
+**Đọc để ra quyết định sản phẩm**
+
+| Dấu hiệu cần điều tra | Kiểm tra tiếp trước khi thay đổi |
+|---|---|
+| Trial nhiều nhưng ít conversion | Cohort đủ tuổi chưa, coverage đầy đủ chưa, có billing retry không, offer nào và thị trường nào; cần dữ liệu paywall/checkout để tìm nguyên nhân. |
+| Payer tăng nhưng repeat ít | User có đủ thời gian đến kỳ tiếp theo chưa; có đổi gói hoặc mua một lần/lifetime không. Xem timeline, không kết luận churn từ số lần mua. |
+| Đơn có tiền và sự kiện hủy gần nhau | Thời điểm hủy so với mua/trial, plan/offer, refund và hết hạn. Đây là tín hiệu cần điều tra, chưa chứng minh nguyên nhân hoặc quyền truy cập đã hết. |
+| Refund cao ở một gói/quốc gia | So cùng tuổi cohort và số mẫu; đối chiếu cả hoàn một phần, offer, giá, billing retry và dữ liệu hỗ trợ nếu có. |
+| Tiền/user tăng nhưng số payer thấp | Một vài người mua nhiều lần có thể chi phối kết quả. Xem Users, số mẫu và đơn chưa gán user trước khi nhân rộng. |
+| Tên offer nói 7 ngày nhưng kỳ Google là 3 ngày | Kiểm tra catalog, kỳ dịch vụ và payload thật; không tự đổi offer từ suy luận tên. |
+
+Những dấu hiệu trên là câu hỏi phân tích, không phải bằng chứng nhân quả. So sánh gói chưa tự kiểm soát khác biệt campaign, loại user, giá hoặc A/B variant. Mốc cảnh báo dưới 30 payer chỉ nhắc mẫu ít, không phải ngưỡng đủ để kết luận thống kê.
+
+**Chỉ số UA cần thêm nguồn dữ liệu, hiện chưa có**
+
+| Chỉ số mong muốn | Dữ liệu phải bổ sung |
+|---|---|
+| Install → Trial / Install → Paid | Installs hoặc first_open và cùng user/cohort; số webhook không thay được mẫu số install. |
+| Paywall → Trial / Checkout Success | Paywall exposure, purchase attempt/result, placement, offer và A/B variant có liên kết user. |
+| CAC theo campaign | Spend và số khách trả tiền mới được attribution trong cùng phạm vi/cohort. Observed Payers hiện tại chưa xác định khách mới theo campaign. |
+| ROAS D7/D30 | Spend, attribution, install cohort và doanh thu phát sinh trong cửa sổ tương ứng; cần xác định gross/developer/net và quy tắc quy đổi tiền. |
+| Renewal Rate lần 1/lần 2 | Chuỗi thuê bao và các kỳ đến hạn đã đủ thời gian quan sát; không chia số renewed event cho số started event. |
+| Retention / Churn / Active Subscribers | Trạng thái thuê bao hiện tại hoặc lịch sử quyền truy cập đáng tin cậy, theo user/chuỗi và kỳ theo dõi. |
+| LTV đầy đủ / dự báo | Lịch sử thu tiền và hoàn tiền đầy đủ theo user/cohort; dự báo cần mô hình và đánh giá riêng. |
+
+Không tự điền 0 cho những chỉ số chưa có dữ liệu. Khi cần so tiền giữa nhiều currency, phải có nguồn tỷ giá, ngày áp dụng và nguyên tắc quy đổi thống nhất; báo cáo hiện tại giữ nguyên currency gốc.
+
+**Ghi lại kết quả phân tích để so tuần sau**
+
+Tạo một tab riêng ngoài các tên tab được hệ thống export, ví dụ **UA_PO_Notes**, ghi ngày đọc, snapshot time, app/country/currency, plan/offer, cohort, mẫu số, chỉ số, vấn đề dữ liệu và giả thuyết cần kiểm chứng. Tab này không nằm trong danh sách export nên không bị ghi lại bởi sync. Không lưu kết luận thủ công vào Dashboard/Description.
 
 ## 6. How to inspect data
 
