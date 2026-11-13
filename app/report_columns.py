@@ -279,3 +279,13 @@ VI_LABELS = {
 
 def localized_headers(columns):
     return [VI_LABELS[column] for column in columns]
+
+
+# New business views keep their complete, documented layouts.
+from app.marketing_reports import HEADERS as MARKETING_HEADERS, DEFINITIONS as MARKETING_DEFINITIONS
+COMPACT_COLUMNS.update({tab: columns[:] for tab, columns in MARKETING_HEADERS.items()})
+VI_LABELS.update({'Qonversion Country (IP)': 'Quốc gia IP (Qonversion)',
+                  'Developer Revenue': 'Doanh thu nhà phát triển', 'User Link Status': 'Tình trạng liên kết user'})
+for key, (label, definition) in MARKETING_DEFINITIONS.items():
+    VI_LABELS[key] = label
+    MEANINGS[key] = definition

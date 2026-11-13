@@ -26,6 +26,8 @@ from google.oauth2 import service_account
 from app.report_columns import DESCRIPTION_HEADERS, description_rows, display_headers, display_rows, localized_headers, VI_LABELS, column_letter as main_column_letter
 from app.reports import build_reports, EXTRA_GROUP_HEADERS, PLANS, USER_HEADERS
 from app.ua_reports import UA_HEADERS
+from app.marketing_reports import HEADERS as MARKETING_HEADERS
+from app.ga4_reports import fetch_events, SCOPE as GA4_SCOPE
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger('iap')
@@ -55,7 +57,8 @@ SHEETS_HEADERS['Description'] = DESCRIPTION_HEADERS
 SHEETS_HEADERS['Qonversion_Events'] += ['User ID', 'Custom User IDs', 'Identity IDs']
 SHEETS_HEADERS['Diagnostics'] = SHEETS_HEADERS['Dashboard'][:]
 SHEETS_HEADERS.update(UA_HEADERS)
-REPORT_TAB_ORDER = ['Dashboard', 'Plan_Comparison', 'Trial_Cohorts', 'Users', 'Country_Analysis',
+SHEETS_HEADERS.update(MARKETING_HEADERS)
+REPORT_TAB_ORDER = list(MARKETING_HEADERS) + ['Dashboard', 'Plan_Comparison', 'Trial_Cohorts', 'Users', 'Country_Analysis',
     'Product_Analysis', 'Transactions', 'User_Timeline', 'Data_Quality', 'Description',
     'Diagnostics', 'Sync_Log', 'Qonversion_Events']
 SHEETS_HEADERS = {name: SHEETS_HEADERS[name] for name in REPORT_TAB_ORDER}
@@ -223,9 +226,22 @@ def export_sheets():
             json_extract(raw_json, '$.user_id') AS user_id,
             json_extract(raw_json, '$.custom_user_id') AS custom_user_id,
             json_extract(raw_json, '$.identity_id') AS identity_id,
-            json_extract(raw_json, '$.transaction.original_transaction_id') AS original_transaction_id FROM events ORDER BY received_at DESC''')]
+            json_extract(raw_json, '$.transaction.original_transaction_id') AS original_transaction_id,
+            raw_json FROM events ORDER BY received_at DESC''')]
         syncs = [dict(row) for row in db.execute('SELECT * FROM sync_log ORDER BY id DESC LIMIT 100')]
     tables = build_reports(orders, events, syncs, config_apps(), utc_now(), os.getenv('TZ', 'Asia/Bangkok'))
+    apps = config_apps()
+    if any((a.get('ga4') or {}).get('property_id') for a in apps):
+        try:
+            ga4_credentials = service_account.Credentials.from_service_account_file(
+                os.environ['GOOGLE_APPLICATION_CREDENTIALS'], scopes=[GA4_SCOPE])
+            with AuthorizedSession(ga4_credentials) as ga4_session:
+                tables['Firebase_Events'] = fetch_events(apps, ga4_session)
+        except Exception:
+            tables['Firebase_Events'] = [[a['key'], '', '', '', '', '', '', '', '', '', '', 'ERROR',
+                'Không tạo được GA4 session; báo cáo tài chính vẫn tiếp tục.'] for a in apps]
+    else:
+        tables['Firebase_Events'] = fetch_events(apps, None)
     tables['Sync_Log'] = [[s['ran_at'], s['result'], s['detail']] for s in syncs]
     tables['Qonversion_Events'] = [[e['app_key'], e['event_time'], e['event_name'], e['order_id'],
         e['product_id'], e['country_ip'], e['environment'], e['event_key'],
@@ -255,8 +271,9 @@ def export_sheets():
         # Batch presentation changes to avoid one extra API write per operation/tab.
         format_requests += [
             {'updateSheetProperties': {'properties': {'sheetId': ws.id, 'index': index,
+                'hidden': name not in MARKETING_HEADERS and name not in ('Data_Quality', 'Description', 'Sync_Log'),
                 'gridProperties': {'frozenRowCount': 1, 'frozenColumnCount': min(2, len(header))}},
-                'fields': 'index,gridProperties.frozenRowCount,gridProperties.frozenColumnCount'}},
+                'fields': 'index,hidden,gridProperties.frozenRowCount,gridProperties.frozenColumnCount'}},
             {'repeatCell': {'range': {'sheetId': ws.id, 'startRowIndex': 0, 'endRowIndex': 1},
                 'cell': {'userEnteredFormat': {'textFormat': {'bold': True},
                     'backgroundColor': {'red': 0.88, 'green': 0.93, 'blue': 1.0}, 'wrapStrategy': 'WRAP'}},
@@ -271,6 +288,13 @@ def export_sheets():
                 'startColumnIndex': rate_column, 'endColumnIndex': rate_column + 1},
                 'cell': {'userEnteredFormat': {'numberFormat': {'type': 'PERCENT', 'pattern': '0.0%'}}},
                 'fields': 'userEnteredFormat.numberFormat'}})
+        for rate_name in ('Conversion Rate', 'Retry Rate'):
+            if rate_name in header:
+                rate_column = header.index(rate_name)
+                format_requests.append({'repeatCell': {'range': {'sheetId': ws.id, 'startRowIndex': 1,
+                    'startColumnIndex': rate_column, 'endColumnIndex': rate_column + 1},
+                    'cell': {'userEnteredFormat': {'numberFormat': {'type': 'PERCENT', 'pattern': '0.0%'}}},
+                    'fields': 'userEnteredFormat.numberFormat'}})
     spreadsheet.batch_update({'requests': format_requests})
     return f'Exported orders={len(orders)}, events={len(events)}'
 

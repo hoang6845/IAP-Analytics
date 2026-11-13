@@ -1,5 +1,7 @@
 # Đọc Sheet để đánh giá gói
 
+> Bố cục mới theo country, cohort/renew, gói, nội dung và màn paywall: xem [HUONG_DAN_BAO_CAO_IAP.md](HUONG_DAN_BAO_CAO_IAP.md). Phần dưới mô tả các tab cũ, hiện được giữ làm tab tra cứu ẩn.
+
 Chỉ cần đọc 3 tab đầu. Các tab còn lại dùng để tra cứu khi cần.
 
 ## 1. Dashboard — Tổng quan (7 cột)

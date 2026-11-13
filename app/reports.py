@@ -209,6 +209,10 @@ def build_reports(orders, events, syncs, apps, now, report_tz='Asia/Bangkok'):
     result = {'Transactions': transactions, 'Country_Analysis': country_rows,
         'Product_Analysis': product_rows, 'Diagnostics': dashboard, 'Users': build_users(enriched, events, links)}
     result.update(build_ua_reports(enriched, events, links, apps, now, report_tz))
+    from app.marketing_reports import build_marketing_reports
+    marketing = build_marketing_reports(enriched, events, links, apps, result['Trial_Cohorts'], report_tz)
+    result['Data_Quality'].extend(marketing.pop('_quality', []))
+    result.update(marketing)
     return result
 USER_HEADERS = ['App', 'User ID', 'Custom User IDs', 'Identity IDs', 'Currency', 'User Link Status',
     'Payment Count', 'Processed Paid Orders', 'Refunded Paid Orders', 'Partially Refunded Paid Orders',

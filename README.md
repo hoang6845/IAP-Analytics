@@ -2,6 +2,8 @@
 
 **Dành cho UA:** [Hướng dẫn đọc Sheet bằng tiếng Việt](HUONG_DAN_DOC_SHEET.md). Deploy code mới trên Railway, giữ volume dữ liệu và SHEET_ID, rồi Sync ngay để cập nhật cột trên Sheet hiện tại.
 
+**Chuyển khỏi Railway:** [Hướng dẫn từng bước sao lưu dữ liệu và chuyển sang Supabase](README_CHUYEN_RAILWAY_SANG_SUPABASE.md).
+
 ## Hướng dẫn setup local và deploy Railway
 
 ### 1. Thiết lập Google từng bước
