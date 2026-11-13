@@ -9,7 +9,8 @@ Các tab kỹ thuật cũ vẫn được cập nhật nhưng ẩn để giảm r
 - Mở bộ lọc ở tiêu đề cột, bỏ chọn các giá trị khác rồi chọn riêng **Tất cả** để xem số liệu gộp. Hoặc bỏ Tất cả và chọn quốc gia/gói/nguồn cụ thể. Các chiều lọc khác vẫn áp dụng; ví dụ quốc gia=Tất cả, gói=weekly là tổng mọi quốc gia của gói weekly.
 - Mỗi lần Sync, bộ lọc mặc định chọn phạm vi Tất cả ở các chiều hỗ trợ, tránh hiển thị chồng chi tiết và tổng hợp. Bộ lọc do người dùng chỉnh sẽ được đặt lại ở lần Sync sau.
 - Không chọn đồng thời Tất cả và từng quốc gia/gói rồi SUM các dòng, vì các phạm vi chồng nhau. User được đếm distinct trong từng phạm vi; tỷ lệ tính lại từ tử số/mẫu số, không lấy tổng/trung bình các tỷ lệ.
-- **Tiền tệ vẫn tách riêng** ở các báo cáo có cột Currency. Dashboard không còn cột Currency nên tiền được ghi kèm mã, ví dụ `USD: 20; VND: 100000`; không cộng lẫn tiền tệ và không tự quy đổi.
+- **Không còn cột tiền tệ riêng** trên các tab xuất. Số tiền ghi kèm mã, ví dụ `20 USD; 100000 VND`. Báo cáo tổng hợp gộp mọi tiền tệ theo quốc gia; chọn quốc gia **Tất cả** để xem mọi quốc gia. User được đếm distinct từ dữ liệu gốc, không cộng các dòng tiền tệ. Không có nguồn tỷ giá nên chưa quy đổi sang USD.
+- Overview có cột quốc gia và bộ lọc Tất cả cho ngày/quốc gia. Country_Performance không chia thành nhiều dòng theo tiền tệ. ARPPU vẫn tính riêng mẫu số payer trong từng tiền tệ rồi ghi mã bên cạnh kết quả. Tab bản ghi như RAW_Data/Transactions/User_Timeline giữ từng bản ghi; dùng Chọn tất cả của bộ lọc để xem toàn bộ.
 - RAW_Data, Transactions, Users, User_Timeline, log và Description giữ bản ghi gốc; dùng **Chọn tất cả** có sẵn trong bộ lọc Sheets để hiện mọi bản ghi. Không tạo bản ghi giao dịch/user giả mang ID Tất cả.
 - Firebase_Events lấy nhóm Tất cả trực tiếp từ GA4 cho từng tổ hợp chiều (tối đa 64 truy vấn/phân trang cho mỗi app/cửa sổ), để số distinct user không bị cộng trùng từ các nhóm chi tiết.
 
@@ -116,3 +117,9 @@ Tài liệu chính thức:
 ## Kiểm tra trước dùng số liệu production
 
 Chạy `python -m unittest discover -s tests`. Kiểm tra thiết bị: mở onboarding/Home icon/banner/Settings/locked theme/font/effect/DIY; xác nhận event params trong DebugView, rotation không đếm lại view, đóng không mua có dismiss, restore không bị tính purchase. Mua sandbox để kiểm tra webhook acquisition có properties và liên kết đúng user/root; không đưa sandbox vào các chỉ số production. Kiểm tra renew/convert ở webhook khi app đóng. Compile/unit test không chứng minh Firebase/GA4/Google Sheets online đã nhận dữ liệu.
+
+## Cột chưa có giá trị sử dụng
+
+Mỗi lần xuất Sheet, cột chỉ có `N/A` trong toàn bộ dữ liệu sẽ được bỏ khỏi bố cục và tab Description. Cột tự xuất hiện lại khi có ít nhất một giá trị hợp lệ, kể cả số 0. Cột có dữ liệu một phần vẫn được giữ.
+
+Tab chưa có bản ghi và cột đang chờ dữ liệu nguồn (rỗng, `UNKNOWN`, GA4 chưa cấu hình) vẫn được giữ. Quy tắc này chỉ thay đổi phần hiển thị, không thay đổi dữ liệu gốc hay phép tính báo cáo. `N/A` không tự chứng minh lỗi tính toán: tỷ lệ trial có thể chưa xác nhận được do thiếu lịch sử/coverage.

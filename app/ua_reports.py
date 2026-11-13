@@ -20,7 +20,7 @@ UA_HEADERS = {
         'Unknown Trial End Episodes', 'Missing Chain Episodes', 'Verified Conversions within 7d after Trial End',
         'Trial to Paid 7d Rate', 'Conversion Rate Status', 'History Coverage Start UTC', 'Notes'],
     'User_Timeline': ['App', 'User ID', 'Time Local', 'Row Type', 'Action', 'Plan Identifier', 'Order ID',
-        'Charged Amount', 'Currency', 'State', 'Environment', 'User Link Status', 'Time UTC', 'Notes'],
+        'Charged Amount', 'Currency', 'State', 'Environment', 'User Link Status', 'Time UTC', 'Notes', 'Country (buyer)'],
     'Data_Quality': ['App', 'Severity', 'Issue', 'Count', 'Details'],
 }
 UA_MEANINGS = {
@@ -87,12 +87,21 @@ def business_stats(rows, events_by_order, links):
     note = 'Observed records only; not full population. Payment counts include refunded orders. No active subscriber, CAC or ROAS claims.'
     if len(users) < 30:
         note += ' Fewer than 30 observed payers; counts alone do not establish a winning plan.'
-    return [len(observed), len(users), len(payments), sum(len(os) >= 2 for os in users.values()), renewal,
+    result = [len(observed), len(users), len(payments), sum(len(os) >= 2 for os in users.values()), renewal,
         len(trial_users), s['trials'], s['zero'], sum(o['state'] == 'REFUNDED' for o in payments),
         s['charged'] if s['amount_known'] else '', s['revenue'] if s['revenue_known'] else '',
         float(sum((Decimal(o['charged']) for o in payments), Decimal(0))) if payments else '',
         float(attributed_money / len(users)) if users else '',
         sum(links[(o['app_key'], o['order_id'])][1] != 'MATCHED' for o, _ in rows), note]
+    if any('_report_currency' in o for o, _ in rows):
+        from app.money import currency, format_parts
+        parts = defaultdict(list)
+        for o, d in rows:
+            parts[currency(o)].append(({k: v for k, v in o.items() if k != '_report_currency'}, d))
+        stats = {cur: business_stats(rs, events_by_order, links) for cur, rs in parts.items()}
+        for index in (9, 10, 11, 12):
+            result[index] = format_parts({cur: values[index] for cur, values in stats.items()})
+    return result
 
 
 def build_ua_reports(enriched, events, links, apps, now, report_tz, include_all=False):
@@ -226,9 +235,10 @@ def build_ua_reports(enriched, events, links, apps, now, report_tz, include_all=
             for o, d in rows:
                 currencies[o.get('currency') or 'UNKNOWN'].append((o, d))
             per_currency = {cur: business_stats(rs, ev_by_order, links) for cur, rs in sorted(currencies.items())}
-            for index in (9, 10, 11, 12):
-                stats[index] = '; '.join(f'{cur}: {values[index]:g}' for cur, values in per_currency.items()
-                                         if isinstance(values[index], (int, float)))
+            if not any('_report_currency' in o for o, _ in rows):
+                for index in (9, 10, 11, 12):
+                    stats[index] = '; '.join(f'{cur}: {values[index]:g}' for cur, values in per_currency.items()
+                                             if isinstance(values[index], (int, float)))
             dashboard_rows.append([app, '', now_dt.astimezone(ZoneInfo(report_tz)).isoformat(), *stats, country])
     else:
         dashboard_rows = [[*key, now_dt.astimezone(ZoneInfo(report_tz)).isoformat(),

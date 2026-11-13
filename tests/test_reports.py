@@ -172,7 +172,7 @@ class ReportsTest(unittest.TestCase):
             tx = worksheets['Transactions']
             tx.resize.assert_not_called()
             data = tx.update.call_args.kwargs['values']
-            self.assertEqual(data[1][data[0].index(VI_LABELS['Charged Amount'])], 10)
+            self.assertEqual(data[1][data[0].index(VI_LABELS['Charged Amount'])], '10 USD')
             self.assertNotIn('Product Title', data[0])
             self.assertEqual(data[1][data[0].index(VI_LABELS['User ID'])], "'=UNSAFE()")
             self.assertEqual(tx.update.call_args.kwargs['value_input_option'], 'RAW')
@@ -183,7 +183,9 @@ class ReportsTest(unittest.TestCase):
             self.assertEqual(users_data[1][users_data[0].index(VI_LABELS['Payment Count'])], 1)
             self.assertNotIn('Custom User IDs', users_data[0])
             description_data = worksheets['Description'].update.call_args.kwargs['values']
-            self.assertEqual(len(description_data), 1 + sum(len(cols) for cols in main.EXPORT_HEADERS.values()))
+            actual_headers = {name: ws.update.call_args.kwargs['values'][0] for name, ws in worksheets.items()}
+            self.assertEqual(len(description_data), 1 + sum(len(cols) for cols in actual_headers.values()))
+            self.assertNotIn(VI_LABELS['Active Subscriptions'], actual_headers['Overview'])
             self.assertEqual(worksheets['Description'].resize.call_count, int(len(description_data) > 100))
             self.assertEqual(sheet.batch_update.call_count, 3)
             formatting = sheet.batch_update.call_args.args[0]['requests']
@@ -194,11 +196,11 @@ class ReportsTest(unittest.TestCase):
             user_column = next(row for row in desc if row[VI_LABELS['Tab']] == 'Transactions' and row[VI_LABELS['Column']] == VI_LABELS['User ID'])
             self.assertTrue(user_column[VI_LABELS['Meaning']])
             self.assertEqual({(r[VI_LABELS['Tab']], r[VI_LABELS['Column']]) for r in desc},
-                {(tab, VI_LABELS[col]) for tab, cols in main.EXPORT_HEADERS.items() for col in cols})
+                {(tab, col) for tab, cols in actual_headers.items() for col in cols})
             for name, ws in worksheets.items():
                 ws.clear.assert_not_called()
                 exported = ws.update.call_args.kwargs['values']
-                self.assertEqual(exported[0], localized_headers(main.EXPORT_HEADERS[name]))
+                self.assertTrue(set(exported[0]).issubset(localized_headers(main.EXPORT_HEADERS[name])))
                 self.assertTrue(all(len(row) == len(exported[0]) for row in exported))
             self.assertEqual(users_data[0][:3], localized_headers(['App', 'User ID', 'Payment Count']))
 

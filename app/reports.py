@@ -90,7 +90,7 @@ def summary(rows):
     charged = sum((Decimal(o['charged']) for o in processed), Decimal(0))
     dates = sorted((timestamp(o.get('order_date')) for o, _ in rows if timestamp(o.get('order_date'))))
     checks = sorted((timestamp(o.get('checked_at')) for o, _ in rows if timestamp(o.get('checked_at'))))
-    return dict(states=states, total=len(rows), charged=float(charged),
+    result = dict(states=states, total=len(rows), charged=float(charged),
         revenue=float(sum((Decimal(o['developer_revenue']) for o in revenue), Decimal(0))),
         amount_known=len(processed), revenue_known=len(revenue),
         average=float(charged / len(processed)) if processed else '',
@@ -99,6 +99,15 @@ def summary(rows):
         positive=sum(Decimal(o['charged']) > 0 for o in processed),
         zero=sum(Decimal(o['charged']) == 0 for o in processed),
         trials=sum('freeTrialDetails' in d['phase'] or 'FREE_TRIAL' in d['phase'] for _, d in rows))
+    if any('_report_currency' in o for o, _ in rows):
+        from app.money import currency, format_parts
+        groups = defaultdict(list)
+        for o, d in rows:
+            groups[currency(o)].append(({k: v for k, v in o.items() if k != '_report_currency'}, d))
+        parts = {cur: summary(rs) for cur, rs in groups.items()}
+        for field in ('charged', 'revenue', 'average'):
+            result[field] = format_parts({cur: s[field] for cur, s in parts.items()})
+    return result
 
 
 def extra_stats(s):
@@ -107,7 +116,13 @@ def extra_stats(s):
         s['positive'], s['zero'], s['trials']]
 
 
-def build_reports(orders, events, syncs, apps, now, report_tz='Asia/Bangkok', include_all=False):
+def build_reports(orders, events, syncs, apps, now, report_tz='Asia/Bangkok', include_all=False, combine_currencies=False):
+    # Use one grouping value for currency while retaining the original code on
+    # a copy of each order. Monetary reducers split by that code; user/order
+    # reducers see all records in the selected country scope.
+    if combine_currencies:
+        from app.grouping import ALL
+        orders = [{**o, '_report_currency': o.get('currency') or 'UNKNOWN', 'currency': ALL} for o in orders]
     linked = defaultdict(list)
     for e in events:
         if (e.get('environment') or '').lower() not in ('sandbox', 'test') and e.get('order_id'):
@@ -120,14 +135,15 @@ def build_reports(orders, events, syncs, apps, now, report_tz='Asia/Bangkok', in
     for o, d in enriched:
         country, currency = o.get('country') or 'UNKNOWN', o.get('currency') or 'UNKNOWN'
         countries[(o['app_key'], country, currency)].append((o, d))
-        products[(o['app_key'], o.get('product') or 'UNKNOWN', currency, d['plan'], d['identifier'])].append((o, d))
+        products[(o['app_key'], o.get('product') or 'UNKNOWN', currency, d['plan'], d['identifier'], country if combine_currencies else 'ALL')].append((o, d))
         for period in ('ALL', month(o.get('order_date'))):
-            dashboards[(o['app_key'], currency, period, 'ALL')].append((o, d))
-            dashboards[(o['app_key'], currency, period, d['plan'])].append((o, d))
+            dashboards[(o['app_key'], country if combine_currencies else currency, period, 'ALL')].append((o, d))
+            dashboards[(o['app_key'], country if combine_currencies else currency, period, d['plan'])].append((o, d))
         dt = timestamp(o.get('order_date'))
         last = d['latest']
         tax = d['payload'].get('tax') or {}
-        tax_value = float(Decimal(str(tax.get('units', 0))) + Decimal(str(tax.get('nanos', 0))) / Decimal(10**9)) if tax.get('currencyCode') == o.get('currency') else ''
+        tax_currency = o.get('_report_currency', o.get('currency'))
+        tax_value = float(Decimal(str(tax.get('units', 0))) + Decimal(str(tax.get('nanos', 0))) / Decimal(10**9)) if tax.get('currencyCode') == tax_currency else ''
         transactions.append([o['app_key'], o['order_id'], o.get('order_date', ''), o.get('country', ''), o.get('product', ''), o['state'], o.get('currency', ''),
             numeric(o.get('charged')), numeric(o.get('developer_revenue')), 'YES', len(linked[(o['app_key'], o['order_id'])]),
             d['plan'], d['identifier'], d['source'], d['kind'], d['base'], d['offer'], d['title'], d['phase'], d['start'], d['end'],
@@ -136,7 +152,9 @@ def build_reports(orders, events, syncs, apps, now, report_tz='Asia/Bangkok', in
     if include_all:
         from app.grouping import expand_groups
         countries = expand_groups(countries, [(1,)])
-        products = expand_groups(products, [(1,), (3,), (4,)])
+        products = expand_groups(products, [(1,), (3,), (4,)] + ([(5,)] if combine_currencies else []))
+        if combine_currencies:
+            dashboards = expand_groups(dashboards, [(1,)])
     country_rows = []
     for k, rows in sorted(countries.items()):
         s = summary(rows)
@@ -146,10 +164,12 @@ def build_reports(orders, events, syncs, apps, now, report_tz='Asia/Bangkok', in
     for k, rows in sorted(products.items()):
         s = summary(rows)
         product_rows.append([*k[:3], s['states']['PROCESSED'], s['states']['PENDING'], s['states']['REFUNDED'], s['charged'],
-            k[3], k[4], s['states']['CANCELED'], s['states']['PARTIALLY_REFUNDED'], s['revenue'], *extra_stats(s), len({o.get('country') for o, _ in rows})])
+            k[3], k[4], s['states']['CANCELED'], s['states']['PARTIALLY_REFUNDED'], s['revenue'], *extra_stats(s), len({o.get('country') for o, _ in rows}), k[5]])
     dashboard = []
     def metric(name, value, app='ALL', currency='', period='ALL', plan='ALL', note=''):
-        dashboard.append([name, value, app, currency, period, plan, note])
+        from app.grouping import ALL
+        dashboard.append([name, value, app, '' if combine_currencies else currency, period, plan, note,
+                          (currency or ALL) if combine_currencies else ALL])
     metric('Last export UTC', now)
     metric('Last export local', timestamp(now).astimezone(ZoneInfo(report_tz)).isoformat())
     metric('Applications', len(apps))
@@ -211,12 +231,32 @@ def build_reports(orders, events, syncs, apps, now, report_tz='Asia/Bangkok', in
             metric(label, s[field], app, currency, period, plan)
     from app.ua_reports import build_ua_reports
     result = {'Transactions': transactions, 'Country_Analysis': country_rows,
-        'Product_Analysis': product_rows, 'Diagnostics': dashboard, 'Users': build_users(enriched, events, links)}
+        'Product_Analysis': product_rows, 'Diagnostics': dashboard, 'Users': build_users(enriched, events, links, combine_currencies)}
     result.update(build_ua_reports(enriched, events, links, apps, now, report_tz, include_all))
     from app.marketing_reports import build_marketing_reports
     marketing = build_marketing_reports(enriched, events, links, apps, result['Trial_Cohorts'], report_tz, include_all)
     result['Data_Quality'].extend(marketing.pop('_quality', []))
     result.update(marketing)
+    if combine_currencies:
+        from app.money import currency, format_amount
+        by_order = {(o['app_key'], o['order_id']): o for o in orders}
+        for row in result['Transactions']:
+            o = by_order[(row[0], row[1])]
+            for index in (7, 8, 25):
+                row[index] = format_amount(row[index], currency(o))
+        for row in result['RAW_Data']:
+            o = by_order.get((row[0], row[4]))
+            if row[1] == 'ORDER' and o:
+                for index in (12, 13):
+                    row[index] = format_amount(row[index], currency(o))
+        for row in result['User_Timeline']:
+            o = by_order.get((row[0], row[6]))
+            row.append((o.get('country') or 'UNKNOWN') if o else 'UNKNOWN')
+            if row[3] == 'ORDER' and o:
+                row[7] = format_amount(row[7], currency(o))
+    else:
+        for row in result['User_Timeline']:
+            row.append('UNKNOWN')
     if include_all:
         from app.grouping import retention_choices, trial_choices
         from app.marketing_reports import HEADERS
@@ -236,7 +276,7 @@ USER_HEADERS = ['App', 'User ID', 'Custom User IDs', 'Identity IDs', 'Currency',
     'Plan Identifiers', 'Buyer Countries', 'Verified Order IDs', 'Production Events (user, all currencies)',
     'Sandbox/Test Events (user, all currencies)', 'Unknown Environment Events (user, all currencies)',
     'Non-Sandbox IDs Without Verified Order (user, all currencies)', 'First Webhook Received UTC',
-    'Last Webhook Received UTC', 'Notes']
+    'Last Webhook Received UTC', 'Notes', 'Country (buyer)']
 PAID_STATES = {'PROCESSED', 'REFUNDED', 'PARTIALLY_REFUNDED', 'PENDING_REFUND'}
 
 
@@ -253,7 +293,7 @@ def user_links(orders, events):
     return result
 
 
-def build_users(enriched, events, links):
+def build_users(enriched, events, links, combine_currencies=False):
     grouped = defaultdict(list)
     profiles = defaultdict(list)
     for e in events:
@@ -262,14 +302,21 @@ def build_users(enriched, events, links):
             profiles[(e['app_key'], user)].append(e)
     for o, d in enriched:
         user, status = links[(o['app_key'], o['order_id'])]
-        grouped[(o['app_key'], user, o.get('currency') or 'UNKNOWN', status)].append((o, d))
-    users_with_orders = {(app, user) for app, user, _, _ in grouped if user}
+        grouped[(o['app_key'], user, o.get('currency') or 'UNKNOWN', status,
+                 (o.get('country') or 'UNKNOWN') if '_report_currency' in o else 'ALL')].append((o, d))
+    if combine_currencies:
+        from app.grouping import expand_groups
+        grouped = expand_groups(grouped, [(4,)])
+    users_with_orders = {(app, user) for app, user, _, _, _ in grouped if user}
     for app, user in profiles:
         if (app, user) not in users_with_orders:
-            grouped[(app, user, '', 'NO_VERIFIED_ORDERS')] = []
+            grouped[(app, user, '', 'NO_VERIFIED_ORDERS', 'UNKNOWN')] = []
+            if combine_currencies:
+                from app.grouping import ALL
+                grouped[(app, user, '', 'NO_VERIFIED_ORDERS', ALL)] = []
     verified_ids = {(o['app_key'], o['order_id']) for o, _ in enriched}
     rows = []
-    for (app, user, currency, status), orders in sorted(grouped.items()):
+    for (app, user, currency, status, buyer), orders in sorted(grouped.items()):
         s = summary(orders)
         paid = [o for o, _ in orders if o['state'] in PAID_STATES and o.get('charged') not in ('', None) and Decimal(o['charged']) > 0]
         paid_states = Counter(o['state'] for o in paid)
@@ -282,6 +329,8 @@ def build_users(enriched, events, links):
         received = sorted(timestamp(e.get('received_at')) for e in ev if timestamp(e.get('received_at')))
         join = lambda values: ';'.join(sorted({str(v) for v in values if v}))
         note = 'Payment Count = distinct known positive-amount verified orders in this currency, including refunded; not active subscriptions. Webhook columns cover this user across all currencies and repeat on each currency row.'
+        if combine_currencies:
+            note = 'Distinct verified payment orders in the selected buyer-country scope; money separated by currency. Webhook metrics cover the user across all countries and repeat on country rows. Not active subscriptions.'
         if not user:
             note = 'Unattributed orders grouped for reconciliation, not one person. ' + note
         elif not orders:
@@ -295,5 +344,11 @@ def build_users(enriched, events, links):
             s['amount_known'], s['revenue_known'], dates[0].isoformat() if dates else '', dates[-1].isoformat() if dates else '',
             s['first'], s['last'], s['checked'], join(d['plan'] for _, d in orders), join(d['identifier'] for _, d in orders),
             join(o.get('country') for o, _ in orders), join(o['order_id'] for o, _ in orders), prod, sandbox, unknown, len(pending_ids),
-            received[0].isoformat() if received else '', received[-1].isoformat() if received else '', note])
+            received[0].isoformat() if received else '', received[-1].isoformat() if received else '', note, buyer])
+        if any('_report_currency' in o for o, _ in orders):
+            from app.money import currency as money_currency, format_parts
+            amounts = defaultdict(Decimal)
+            for o in paid:
+                amounts[money_currency(o)] += Decimal(o['charged'])
+            rows[-1][22] = format_parts(amounts)
     return rows

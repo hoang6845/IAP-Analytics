@@ -42,11 +42,12 @@ def retention_choices(rows, headers):
         out = dict(zip(dimensions, key))
         out['Renewal Users'] = len({(m['App'], m['User ID']) for m in members if m['Renewal Orders']})
         out['Renewal Orders'] = sum(m['Renewal Orders'] for m in members)
-        out['Revenue at Step'] = sum(m['Revenue at Step'] for m in members)
+        from app.money import sum_values
+        out['Revenue at Step'] = sum_values(m['Revenue at Step'] for m in members)
         # These values are repeated per renewal step in the detailed report.
         chains = {tuple(m[c] for c in dimensions[:-1]): m for m in members}
         for column in ('Total Revenue', 'Renewal Revenue', 'Conversion Revenue', 'Other Revenue'):
-            out[column] = sum(m[column] for m in chains.values())
+            out[column] = sum_values(m[column] for m in chains.values())
         out['Renewal Number Status'] = ('UNKNOWN_HISTORY' if any(m['Renewal Number Status'] == 'UNKNOWN_HISTORY' for m in members)
                                         else 'AVAILABLE')
         out['Notes'] = 'Tổng hợp từ dữ liệu gốc; user distinct, tổng chuỗi không cộng lặp theo bước. Chọn một phạm vi chi tiết hoặc Tất cả, không SUM chồng nhau.'
@@ -76,15 +77,17 @@ def trial_choices(rows, headers):
 
 
 # Raw/log/dictionary tabs use native Select all, retaining individual records.
-# Currency remains explicit; it is not an additive grouping across currencies.
+# Money cells retain each currency separately when currency groups are collapsed.
 FILTER_DIMENSIONS = {
     'Dashboard': ['Country (buyer)'],
-    'Overview': ['Local Date'],
+    'Overview': ['Local Date', 'Country (buyer)'],
     'Country_Performance': ['Country (buyer)'],
     'Country_Analysis': ['Country (buyer)'],
     'Package_Performance': ['Plan Type', 'Plan Identifier', 'Country (buyer)'],
     'Plan_Comparison': ['Plan Type', 'Plan Identifier', 'Offer ID', 'Country (buyer)'],
-    'Product_Analysis': ['Product', 'Plan Type', 'Plan Identifier'],
+    'Product_Analysis': ['Product', 'Plan Type', 'Plan Identifier', 'Country (buyer)'],
+    'Users': ['Country (buyer)'],
+    'Diagnostics': ['Country (buyer)'],
     'Trial_Cohorts': ['Trial Start Week UTC', 'Plan Type', 'Plan Identifier', 'Offer ID', 'Country (buyer)'],
     'Cohort_Retention': ['Cohort Month', 'Country (buyer)', 'User ID', 'Original Transaction ID', 'Plan Identifier', 'Renewal Number'],
     'Plan_Upgrades': ['Country (buyer)', 'From Plan', 'To Plan'],

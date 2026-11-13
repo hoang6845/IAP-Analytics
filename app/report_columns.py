@@ -209,6 +209,26 @@ def display_rows(rows, source_headers, target_headers):
     positions = [source_headers.index(column) for column in target_headers]
     return [[row[index] for index in positions] for row in rows]
 
+
+def snapshot_headers(headers, source_headers, tables):
+    """Omit columns containing only N/A in this snapshot, retaining pending data.
+
+    Empty tabs/columns, UNKNOWN attribution, zeroes and partially available
+    metrics stay visible. A metric returns automatically once it has a value.
+    """
+    result = {}
+    for tab, columns in headers.items():
+        rows = tables.get(tab, [])
+        selected = []
+        for column in columns:
+            index = source_headers[tab].index(column)
+            values = [row[index] for row in rows if row[index] not in ('', None)]
+            if values and all(value == 'N/A' for value in values):
+                continue
+            selected.append(column)
+        result[tab] = selected
+    return result
+
 # Vietnamese labels are presentation only; canonical keys remain stable.
 VI_LABELS = {
     'App': 'Ứng dụng',
@@ -289,3 +309,12 @@ VI_LABELS.update({'Qonversion Country (IP)': 'Quốc gia IP (Qonversion)',
 for key, (label, definition) in MARKETING_DEFINITIONS.items():
     VI_LABELS[key] = label
     MEANINGS[key] = definition
+
+# Currency is carried by each money value. Country scopes aggregate distinct
+# users/orders across currencies; no exchange rate is inferred.
+for _tab, _columns in COMPACT_COLUMNS.items():
+    COMPACT_COLUMNS[_tab] = [c for c in _columns if c != 'Currency']
+for _tab in ('Overview', 'Users', 'Product_Analysis', 'User_Timeline', 'Diagnostics', 'Qonversion_Events'):
+    _columns = COMPACT_COLUMNS[_tab]
+    if 'Country (buyer)' not in _columns:
+        _columns.insert(2 if _tab == 'Overview' else len(_columns), 'Country (buyer)')

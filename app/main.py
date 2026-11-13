@@ -23,7 +23,7 @@ from fastapi.responses import HTMLResponse
 from google.auth.transport.requests import AuthorizedSession
 from google.oauth2 import service_account
 
-from app.report_columns import DESCRIPTION_HEADERS, description_rows, display_headers, display_rows, localized_headers, VI_LABELS, column_letter as main_column_letter
+from app.report_columns import DESCRIPTION_HEADERS, description_rows, display_headers, display_rows, snapshot_headers, localized_headers, VI_LABELS, column_letter as main_column_letter
 from app.reports import build_reports, EXTRA_GROUP_HEADERS, PLANS, USER_HEADERS
 from app.ua_reports import UA_HEADERS
 from app.marketing_reports import HEADERS as MARKETING_HEADERS
@@ -51,12 +51,14 @@ SHEETS_HEADERS['Transactions'] += ['Plan Type', 'Plan Identifier', 'Plan Type So
     'Qonversion Country (IP)', 'User ID', 'User Link Status']
 SHEETS_HEADERS['Country_Analysis'] += EXTRA_GROUP_HEADERS + [p + ' Orders' for p in PLANS] + ['Plan Variants']
 SHEETS_HEADERS['Product_Analysis'] += ['Plan Type', 'Plan Identifier', 'Canceled Orders', 'Partially Refunded Orders',
-    'Developer Revenue (processed and partially refunded)'] + EXTRA_GROUP_HEADERS + ['Buyer Countries']
+    'Developer Revenue (processed and partially refunded)'] + EXTRA_GROUP_HEADERS + ['Buyer Countries', 'Country (buyer)']
 SHEETS_HEADERS['Dashboard'] += ['App', 'Currency', 'Order Month UTC', 'Plan Type', 'Notes']
 SHEETS_HEADERS['Users'] = USER_HEADERS
 SHEETS_HEADERS['Description'] = DESCRIPTION_HEADERS
 SHEETS_HEADERS['Qonversion_Events'] += ['User ID', 'Custom User IDs', 'Identity IDs']
 SHEETS_HEADERS['Diagnostics'] = SHEETS_HEADERS['Dashboard'][:]
+SHEETS_HEADERS['Diagnostics'] += ['Country (buyer)']
+SHEETS_HEADERS['Qonversion_Events'] += ['Country (buyer)']
 SHEETS_HEADERS.update(UA_HEADERS)
 SHEETS_HEADERS.update(MARKETING_HEADERS)
 REPORT_TAB_ORDER = list(MARKETING_HEADERS) + ['Dashboard', 'Plan_Comparison', 'Trial_Cohorts', 'Users', 'Country_Analysis',
@@ -230,7 +232,8 @@ def export_sheets():
             json_extract(raw_json, '$.transaction.original_transaction_id') AS original_transaction_id,
             raw_json FROM events ORDER BY received_at DESC''')]
         syncs = [dict(row) for row in db.execute('SELECT * FROM sync_log ORDER BY id DESC LIMIT 100')]
-    tables = build_reports(orders, events, syncs, config_apps(), utc_now(), os.getenv('TZ', 'Asia/Bangkok'), include_all=True)
+    tables = build_reports(orders, events, syncs, config_apps(), utc_now(), os.getenv('TZ', 'Asia/Bangkok'),
+                          include_all=True, combine_currencies=True)
     apps = config_apps()
     if any((a.get('ga4') or {}).get('property_id') for a in apps):
         try:
@@ -244,14 +247,17 @@ def export_sheets():
     else:
         tables['Firebase_Events'] = fetch_events(apps, None)
     tables['Sync_Log'] = [[s['ran_at'], s['result'], s['detail']] for s in syncs]
+    buyer_countries = {(o['app_key'], o['order_id']): o.get('country') or 'UNKNOWN' for o in orders}
     tables['Qonversion_Events'] = [[e['app_key'], e['event_time'], e['event_name'], e['order_id'],
         e['product_id'], e['country_ip'], e['environment'], e['event_key'],
-        e.get('user_id') or '', e.get('custom_user_id') or '', e.get('identity_id') or ''] for e in events[:20000]]
-    tables['Description'] = description_rows(EXPORT_HEADERS)
+        e.get('user_id') or '', e.get('custom_user_id') or '', e.get('identity_id') or '',
+        buyer_countries.get((e['app_key'], e['order_id']), 'UNKNOWN')] for e in events[:20000]]
+    export_headers = snapshot_headers(EXPORT_HEADERS, SHEETS_HEADERS, tables)
+    tables['Description'] = description_rows(export_headers)
     for row in tables['Description']:
         row[1] = VI_LABELS[row[1]]
     format_requests = []
-    for index, (name, header) in enumerate(EXPORT_HEADERS.items()):
+    for index, (name, header) in enumerate(export_headers.items()):
         try:
             ws = spreadsheet.worksheet(name)
         except gspread.WorksheetNotFound:
@@ -287,7 +293,13 @@ def export_sheets():
         if name != 'Sync_Log':
             format_requests.append({'setBasicFilter': {'filter': {'criteria': default_filter_criteria(name, header, export_rows), 'range': {'sheetId': ws.id,
                 'startRowIndex': 0, 'endRowIndex': max(2, len(values)), 'startColumnIndex': 0, 'endColumnIndex': len(header)}}}})
-        if name == 'Trial_Cohorts':
+        # A removed metric shifts later columns; do not leave its percent format
+        # attached to a count or amount in the next snapshot.
+        format_requests.append({'repeatCell': {'range': {'sheetId': ws.id,
+            'startRowIndex': 1, 'endRowIndex': max(2, len(values)),
+            'startColumnIndex': 0, 'endColumnIndex': len(header)},
+            'cell': {}, 'fields': 'userEnteredFormat.numberFormat'}})
+        if name == 'Trial_Cohorts' and 'Trial to Paid 7d Rate' in header:
             rate_column = header.index('Trial to Paid 7d Rate')
             format_requests.append({'repeatCell': {'range': {'sheetId': ws.id, 'startRowIndex': 1,
                 'startColumnIndex': rate_column, 'endColumnIndex': rate_column + 1},

@@ -15,7 +15,7 @@ METRICS = ['Trial Users', 'Paying Users', 'ARPPU', 'Mature Trials', 'Converted T
            'Renewal Revenue', 'Conversion Revenue', 'Other Revenue', 'Missing Revenue Orders']
 HEADERS = {
     'Overview': ['App', 'Local Date', 'Currency', 'Observed Subscription Chains',
-                 'New Subscriptions', 'Canceled Subscriptions', 'Active Subscriptions'] + METRICS + ['Notes'],
+                 'New Subscriptions', 'Canceled Subscriptions', 'Active Subscriptions'] + METRICS + ['Notes', 'Country (buyer)'],
     'RAW_Data': ['App', 'Row Type', 'Time Local', 'User ID', 'Order ID', 'Original Transaction ID',
                  'Country (buyer)', 'Qonversion Country (IP)', 'Plan Type', 'Plan Identifier',
                  'Offer ID', 'Currency', 'Charged Amount', 'Developer Revenue', 'State',
@@ -113,6 +113,7 @@ def payload(event):
 
 
 def build_marketing_reports(enriched, events, links, apps, cohorts, report_tz, include_all=False):
+    combine_currencies = any('_report_currency' in o for o, _ in enriched)
     tables = {name: [] for name in HEADERS}
     production = [e for e in events if (e.get('environment') or '').lower() == 'production']
     by_order = defaultdict(list)
@@ -156,10 +157,34 @@ def build_marketing_reports(enriched, events, links, apps, cohorts, report_tz, i
     def attribute(r):
         return attrs.get(chain_of(r), ('UNKNOWN',) * 4)
 
-    def revenue(rs, kind=None):
+    def revenue_number(rs, kind=None):
         return float(sum((Decimal(r['o']['charged']) for r in rs
                           if r['o']['state'] == 'PROCESSED' and r['o'].get('charged') not in ('', None)
                           and (kind is None or r['kind'] == kind)), Decimal(0)))
+
+    def revenue(rs, kind=None):
+        if not combine_currencies:
+            return revenue_number(rs, kind)
+        from app.money import currency, format_parts
+        groups = defaultdict(list)
+        for r in rs:
+            groups[currency(r['o'])].append(r)
+        return format_parts({cur: revenue_number(group, kind) for cur, group in groups.items()})
+
+    def arppu(rs):
+        payers = {r['user'] for r in rs if r['user'] and paid(r['o'])}
+        if not combine_currencies:
+            return revenue_number([r for r in rs if r['user']]) / len(payers) if payers else 'N/A'
+        from app.money import currency, format_parts
+        groups = defaultdict(list)
+        for r in rs:
+            groups[currency(r['o'])].append(r)
+        parts = {}
+        for cur, group in groups.items():
+            users = {r['user'] for r in group if r['user'] and paid(r['o'])}
+            if users:
+                parts[cur] = revenue_number([r for r in group if r['user']]) / len(users)
+        return format_parts(parts) if parts else 'N/A'
 
     # Retry/cancel assigned by app/user/root, including webhook-only lifecycle events.
     lifecycle = defaultdict(list)
@@ -179,7 +204,7 @@ def build_marketing_reports(enriched, events, links, apps, cohorts, report_tz, i
         converted = sum(c['Verified Conversions within 7d after Trial End'] for c in cohort_dicts)
         rate = converted / mature if mature and all(c['Conversion Rate Status'] == 'AVAILABLE' for c in cohort_dicts) else 'N/A'
         denominator = subscription_users | retry
-        return [len(trial_users), len(payers), revenue([r for r in rs if r['user']]) / len(payers) if payers else 'N/A',
+        return [len(trial_users), len(payers), arppu(rs),
                 mature, converted, rate, len(retry), len(retry) / len(denominator) if denominator else 'N/A',
                 revenue(rs), revenue(rs, 'renew'), revenue(rs, 'convert'), revenue(rs, 'other'),
                 sum(r['o']['state'] == 'PROCESSED' and r['o'].get('charged') in ('', None) for r in rs)]
@@ -193,9 +218,9 @@ def build_marketing_reports(enriched, events, links, apps, cohorts, report_tz, i
         attr = attribute(r)
         theme[(app, *attr, buyer, cur)].append(r)
         screen[(app, attr[3], buyer, cur)].append(r)
-        overview[(app, 'ALL', cur)].append(r)
+        overview[(app, 'ALL', buyer if combine_currencies else cur)].append(r)
         day = r['date'].astimezone(ZoneInfo(report_tz)).date().isoformat() if r['date'] else 'UNKNOWN'
-        overview[(app, day, cur)].append(r)
+        overview[(app, day, buyer if combine_currencies else cur)].append(r)
         tables['RAW_Data'].append([app, 'ORDER', r['date'].astimezone(ZoneInfo(report_tz)).isoformat() if r['date'] else '',
             r['user'], o['order_id'], r['root'], buyer, '', d['plan'], d['identifier'], d['offer'], cur,
             numeric(o.get('charged')), numeric(o.get('developer_revenue')), o['state'], '', 'VERIFIED_ORDER',
@@ -216,6 +241,8 @@ def build_marketing_reports(enriched, events, links, apps, cohorts, report_tz, i
         package = expand_groups(package, [(1,), (2,), (3,)])
         theme = expand_groups(theme, [(1,), (2,), (3,), (4,), (5,)])
         screen = expand_groups(screen, [(1,), (2,)])
+        if combine_currencies:
+            overview = expand_groups(overview, [(2,)])
     def matches(actual, selected):
         return all(want == ALL or value == want for value, want in zip(actual, selected))
     for key, rs in sorted(country.items()):
@@ -235,23 +262,32 @@ def build_marketing_reports(enriched, events, links, apps, cohorts, report_tz, i
                 dt = timestamp(e.get('event_time'))
                 if dt:
                     day = dt.astimezone(ZoneInfo(report_tz)).date().isoformat()
-                    for cur in {r['o'].get('currency') or 'UNKNOWN' for r in rs}:
+                    for cur in {(r['o'].get('country') if combine_currencies else r['o'].get('currency')) or 'UNKNOWN' for r in rs}:
                         overview.setdefault((c[0], day, cur), [])
+                        if combine_currencies and include_all:
+                            overview.setdefault((c[0], day, ALL), [])
     for key, rs in sorted(overview.items()):
         app, day, cur = key
         def on_day(e):
             dt = timestamp(e.get('event_time'))
             return day == 'ALL' or bool(dt and dt.astimezone(ZoneInfo(report_tz)).date().isoformat() == day)
+        def in_scope(order):
+            if combine_currencies:
+                return cur == ALL or (order.get('country') or 'UNKNOWN') == cur
+            return (order.get('currency') or 'UNKNOWN') == cur
         cs = {c for c, chain_rs in chains.items() if c[0] == app and any(
-            r['d']['kind'] == 'SUBSCRIPTION' and (r['o'].get('currency') or 'UNKNOWN') == cur for r in chain_rs)}
+            r['d']['kind'] == 'SUBSCRIPTION' and in_scope(r['o']) for r in chain_rs)}
         new = {c for c in cs if c in starts and (day == 'ALL' or starts[c].astimezone(ZoneInfo(report_tz)).date().isoformat() == day)}
         canceled = {c for c in cs if any(e['event_name'] in CANCEL and on_day(e) for e in lifecycle[c])}
-        cr = [c for c in cohorts if c[0] == app and c[6] == cur] if day == 'ALL' else []
+        cr = [c for c in cohorts if c[0] == app and (
+              (cur == ALL or c[5] == cur) if combine_currencies else c[6] == cur)] if day == 'ALL' else []
         metrics = stat(rs, cr)
         if day != 'ALL':
             # All-time retry membership is not a daily failure rate.
             metrics[3:8] = ['N/A'] * 5
-        tables['Overview'].append([*key, len(cs) if day == 'ALL' else 'N/A', len(new), len(canceled), 'N/A', *metrics, NOTE])
+        tables['Overview'].append([app, day, ALL if combine_currencies else cur,
+            len(cs) if day == 'ALL' else 'N/A', len(new), len(canceled), 'N/A', *metrics, NOTE,
+            cur if combine_currencies else ALL])
 
     upgrades = defaultdict(list)
     for c, rs in sorted(chains.items()):
