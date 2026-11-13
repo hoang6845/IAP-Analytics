@@ -112,7 +112,7 @@ def payload(event):
     return json.loads(raw) if isinstance(raw, str) else raw
 
 
-def build_marketing_reports(enriched, events, links, apps, cohorts, report_tz):
+def build_marketing_reports(enriched, events, links, apps, cohorts, report_tz, include_all=False):
     tables = {name: [] for name in HEADERS}
     production = [e for e in events if (e.get('environment') or '').lower() == 'production']
     by_order = defaultdict(list)
@@ -210,11 +210,19 @@ def build_marketing_reports(enriched, events, links, apps, cohorts, report_tz):
             e.get('product_id') or '', '', '', '', '', '', e.get('event_name') or '', e.get('environment') or 'UNKNOWN',
             *attr, 'ACQUISITION_SNAPSHOT' if attr != ('UNKNOWN',) * 4 else 'UNKNOWN', ''])
 
+    from app.grouping import expand_groups, ALL
+    if include_all:
+        country = expand_groups(country, [(1,)])
+        package = expand_groups(package, [(1,), (2,), (3,)])
+        theme = expand_groups(theme, [(1,), (2,), (3,), (4,), (5,)])
+        screen = expand_groups(screen, [(1,), (2,)])
+    def matches(actual, selected):
+        return all(want == ALL or value == want for value, want in zip(actual, selected))
     for key, rs in sorted(country.items()):
-        cr = [c for c in cohorts if (c[0], c[5], c[6]) == key]
+        cr = [c for c in cohorts if matches((c[0], c[5], c[6]), key)]
         tables['Country_Performance'].append([*key, *stat(rs, cr), NOTE])
     for key, rs in sorted(package.items()):
-        cr = [c for c in cohorts if (c[0], c[2], c[3], c[5], c[6]) == key]
+        cr = [c for c in cohorts if matches((c[0], c[2], c[3], c[5], c[6]), key)]
         tables['Package_Performance'].append([*key, sum(paid(r['o']) for r in rs), *stat(rs, cr), NOTE])
 
     # Daily rows count lifecycle activity by event date, not receipt date/order date.
@@ -299,8 +307,6 @@ def build_marketing_reports(enriched, events, links, apps, cohorts, report_tz):
                     revenue(all_rs, 'convert'), revenue(all_rs, 'other'),
                     'PROVIDER_COUNTER' if group and all(r.get('step_status') == 'PROVIDER_COUNTER' for r in group) else 'AVAILABLE' if valid else 'UNKNOWN_HISTORY',
                     'Tổng chuỗi lặp trên từng bước: không SUM Total/Renew/Convert/Other qua các bước. Step 0 không phải renew.'])
-    for key, rs in sorted(upgrades.items()):
-        tables['Plan_Upgrades'].append([*key, len({r['user'] for r in rs}), len(rs), revenue(rs), NOTE])
     # A lifetime purchase can create a new store chain. Use the active-plan context
     # captured before billing, rather than guessing from unrelated previous orders.
     lifetime_upgrades = defaultdict(list)
@@ -313,9 +319,13 @@ def build_marketing_reports(enriched, events, links, apps, cohorts, report_tz):
             key = (r['o']['app_key'], r['o'].get('country') or 'UNKNOWN', r['o'].get('currency') or 'UNKNOWN',
                    next(iter(previous_plans)), 'LIFETIME')
             lifetime_upgrades[key].append(r)
-    for key, rs in sorted(lifetime_upgrades.items()):
+    for key, rs in lifetime_upgrades.items():
+        upgrades[key].extend(rs)
+    if include_all:
+        upgrades = expand_groups(upgrades, [(1,), (3,), (4,)])
+    for key, rs in sorted(upgrades.items()):
         tables['Plan_Upgrades'].append([*key, len({r['user'] for r in rs}), len(rs), revenue(rs),
-            NOTE + ' Lifetime: gói active trước mua do app chụp trong iap_from_plan; không phải event subscription_upgraded.'])
+            NOTE + ' Upgrade từ webhook subscription_upgraded; lifetime dùng gói active app chụp trong iap_from_plan.'])
 
     def attributed_stats(rs):
         cs = {chain_of(r) for r in rs}

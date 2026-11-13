@@ -28,6 +28,7 @@ from app.reports import build_reports, EXTRA_GROUP_HEADERS, PLANS, USER_HEADERS
 from app.ua_reports import UA_HEADERS
 from app.marketing_reports import HEADERS as MARKETING_HEADERS
 from app.ga4_reports import fetch_events, SCOPE as GA4_SCOPE
+from app.grouping import ALL as FILTER_ALL, default_filter_criteria
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger('iap')
@@ -229,14 +230,14 @@ def export_sheets():
             json_extract(raw_json, '$.transaction.original_transaction_id') AS original_transaction_id,
             raw_json FROM events ORDER BY received_at DESC''')]
         syncs = [dict(row) for row in db.execute('SELECT * FROM sync_log ORDER BY id DESC LIMIT 100')]
-    tables = build_reports(orders, events, syncs, config_apps(), utc_now(), os.getenv('TZ', 'Asia/Bangkok'))
+    tables = build_reports(orders, events, syncs, config_apps(), utc_now(), os.getenv('TZ', 'Asia/Bangkok'), include_all=True)
     apps = config_apps()
     if any((a.get('ga4') or {}).get('property_id') for a in apps):
         try:
             ga4_credentials = service_account.Credentials.from_service_account_file(
                 os.environ['GOOGLE_APPLICATION_CREDENTIALS'], scopes=[GA4_SCOPE])
             with AuthorizedSession(ga4_credentials) as ga4_session:
-                tables['Firebase_Events'] = fetch_events(apps, ga4_session)
+                tables['Firebase_Events'] = fetch_events(apps, ga4_session, include_all=True)
         except Exception:
             tables['Firebase_Events'] = [[a['key'], '', '', '', '', '', '', '', '', '', '', 'ERROR',
                 'Không tạo được GA4 session; báo cáo tài chính vẫn tiếp tục.'] for a in apps]
@@ -255,7 +256,11 @@ def export_sheets():
             ws = spreadsheet.worksheet(name)
         except gspread.WorksheetNotFound:
             ws = spreadsheet.add_worksheet(title=name, rows=100, cols=max(12, len(header)))
-        values = [localized_headers(header)] + [[c if isinstance(c, (float, int)) and not isinstance(c, bool) else sheet_safe(c) for c in row] for row in display_rows(tables[name], SHEETS_HEADERS[name], header)]
+        export_rows = display_rows(tables[name], SHEETS_HEADERS[name], header)
+        if name == 'Overview':
+            day_index = header.index('Local Date')
+            export_rows = [[FILTER_ALL if i == day_index and value == 'ALL' else value for i, value in enumerate(row)] for row in export_rows]
+        values = [localized_headers(header)] + [[c if isinstance(c, (float, int)) and not isinstance(c, bool) else sheet_safe(c) for c in row] for row in export_rows]
         # Existing tabs may have only 12 columns; expand before writing the richer report.
         if ws.row_count < len(values) or ws.col_count < len(header):
             ws.resize(rows=max(ws.row_count, len(values)), cols=max(ws.col_count, len(header)))
@@ -271,7 +276,7 @@ def export_sheets():
         # Batch presentation changes to avoid one extra API write per operation/tab.
         format_requests += [
             {'updateSheetProperties': {'properties': {'sheetId': ws.id, 'index': index,
-                'hidden': name not in MARKETING_HEADERS and name not in ('Data_Quality', 'Description', 'Sync_Log'),
+                'hidden': name not in MARKETING_HEADERS and name not in ('Dashboard', 'Data_Quality', 'Description', 'Sync_Log'),
                 'gridProperties': {'frozenRowCount': 1, 'frozenColumnCount': min(2, len(header))}},
                 'fields': 'index,hidden,gridProperties.frozenRowCount,gridProperties.frozenColumnCount'}},
             {'repeatCell': {'range': {'sheetId': ws.id, 'startRowIndex': 0, 'endRowIndex': 1},
@@ -280,7 +285,7 @@ def export_sheets():
                 'fields': 'userEnteredFormat'}},
         ]
         if name != 'Sync_Log':
-            format_requests.append({'setBasicFilter': {'filter': {'range': {'sheetId': ws.id,
+            format_requests.append({'setBasicFilter': {'filter': {'criteria': default_filter_criteria(name, header, export_rows), 'range': {'sheetId': ws.id,
                 'startRowIndex': 0, 'endRowIndex': max(2, len(values)), 'startColumnIndex': 0, 'endColumnIndex': len(header)}}}})
         if name == 'Trial_Cohorts':
             rate_column = header.index('Trial to Paid 7d Rate')

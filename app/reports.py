@@ -107,7 +107,7 @@ def extra_stats(s):
         s['positive'], s['zero'], s['trials']]
 
 
-def build_reports(orders, events, syncs, apps, now, report_tz='Asia/Bangkok'):
+def build_reports(orders, events, syncs, apps, now, report_tz='Asia/Bangkok', include_all=False):
     linked = defaultdict(list)
     for e in events:
         if (e.get('environment') or '').lower() not in ('sandbox', 'test') and e.get('order_id'):
@@ -133,6 +133,10 @@ def build_reports(orders, events, syncs, apps, now, report_tz='Asia/Bangkok'):
             d['plan'], d['identifier'], d['source'], d['kind'], d['base'], d['offer'], d['title'], d['phase'], d['start'], d['end'],
             month(o.get('order_date')), dt.astimezone(ZoneInfo(report_tz)).isoformat() if dt else '', o.get('checked_at', ''),
             d['payload'].get('lastEventTime', ''), tax_value, last.get('event_name', ''), last.get('event_time', ''), last.get('country_ip', ''), *links[(o['app_key'], o['order_id'])]])
+    if include_all:
+        from app.grouping import expand_groups
+        countries = expand_groups(countries, [(1,)])
+        products = expand_groups(products, [(1,), (3,), (4,)])
     country_rows = []
     for k, rows in sorted(countries.items()):
         s = summary(rows)
@@ -208,11 +212,17 @@ def build_reports(orders, events, syncs, apps, now, report_tz='Asia/Bangkok'):
     from app.ua_reports import build_ua_reports
     result = {'Transactions': transactions, 'Country_Analysis': country_rows,
         'Product_Analysis': product_rows, 'Diagnostics': dashboard, 'Users': build_users(enriched, events, links)}
-    result.update(build_ua_reports(enriched, events, links, apps, now, report_tz))
+    result.update(build_ua_reports(enriched, events, links, apps, now, report_tz, include_all))
     from app.marketing_reports import build_marketing_reports
-    marketing = build_marketing_reports(enriched, events, links, apps, result['Trial_Cohorts'], report_tz)
+    marketing = build_marketing_reports(enriched, events, links, apps, result['Trial_Cohorts'], report_tz, include_all)
     result['Data_Quality'].extend(marketing.pop('_quality', []))
     result.update(marketing)
+    if include_all:
+        from app.grouping import retention_choices, trial_choices
+        from app.marketing_reports import HEADERS
+        from app.ua_reports import UA_HEADERS
+        result['Cohort_Retention'] = retention_choices(result['Cohort_Retention'], HEADERS['Cohort_Retention'])
+        result['Trial_Cohorts'] = trial_choices(result['Trial_Cohorts'], UA_HEADERS['Trial_Cohorts'])
     return result
 USER_HEADERS = ['App', 'User ID', 'Custom User IDs', 'Identity IDs', 'Currency', 'User Link Status',
     'Payment Count', 'Processed Paid Orders', 'Refunded Paid Orders', 'Partially Refunded Paid Orders',

@@ -1,10 +1,21 @@
 # Báo cáo IAP cho marketing / product
 
 Code tạo các tab dưới đây ở lần **Sync** kế tiếp sau deploy. Chưa chạy Sync online trong lần sửa này.
-Các tab kỹ thuật cũ vẫn được cập nhật nhưng ẩn để giảm rối; dùng Sheets → View → Hidden sheets để mở lại.
+Các tab kỹ thuật cũ vẫn được cập nhật nhưng ẩn để giảm rối; dùng Sheets → View → Hidden sheets để mở lại. Dashboard hiện hiển thị quốc gia thay cho tiền tệ.
+
+## Lọc “Tất cả” trong Sheets
+
+- Các cột phân nhóm của báo cáo tổng hợp có giá trị **Tất cả**: quốc gia, gói/offer, nguồn paywall, loại/ID/tên nội dung, cohort/user/chuỗi/lần renew. Đây là nhóm số liệu tính lại từ dữ liệu gốc, không phải dòng cộng cuối bảng.
+- Mở bộ lọc ở tiêu đề cột, bỏ chọn các giá trị khác rồi chọn riêng **Tất cả** để xem số liệu gộp. Hoặc bỏ Tất cả và chọn quốc gia/gói/nguồn cụ thể. Các chiều lọc khác vẫn áp dụng; ví dụ quốc gia=Tất cả, gói=weekly là tổng mọi quốc gia của gói weekly.
+- Mỗi lần Sync, bộ lọc mặc định chọn phạm vi Tất cả ở các chiều hỗ trợ, tránh hiển thị chồng chi tiết và tổng hợp. Bộ lọc do người dùng chỉnh sẽ được đặt lại ở lần Sync sau.
+- Không chọn đồng thời Tất cả và từng quốc gia/gói rồi SUM các dòng, vì các phạm vi chồng nhau. User được đếm distinct trong từng phạm vi; tỷ lệ tính lại từ tử số/mẫu số, không lấy tổng/trung bình các tỷ lệ.
+- **Tiền tệ vẫn tách riêng** ở các báo cáo có cột Currency. Dashboard không còn cột Currency nên tiền được ghi kèm mã, ví dụ `USD: 20; VND: 100000`; không cộng lẫn tiền tệ và không tự quy đổi.
+- RAW_Data, Transactions, Users, User_Timeline, log và Description giữ bản ghi gốc; dùng **Chọn tất cả** có sẵn trong bộ lọc Sheets để hiện mọi bản ghi. Không tạo bản ghi giao dịch/user giả mang ID Tất cả.
+- Firebase_Events lấy nhóm Tất cả trực tiếp từ GA4 cho từng tổ hợp chiều (tối đa 64 truy vấn/phân trang cho mỗi app/cửa sổ), để số distinct user không bị cộng trùng từ các nhóm chi tiết.
 
 | Tab | Dùng để trả lời |
 | --- | --- |
+| Dashboard | So sánh quốc gia hoặc chọn Tất cả quốc gia; user trả phí, lượt trả tiền/renew/refund và tiền thu có mã tiền tệ. |
 | Overview | Tổng chuỗi thuê bao đã quan sát; thuê bao mới, hủy theo ngày; trial, payer và tiền thu. Lọc ALL hoặc ngày, không cộng cả hai. |
 | RAW_Data | Ngày giờ, user ID, order ID, ID chuỗi, country, gói, offer, tiền/currency, trạng thái, event, nội dung và nguồn paywall. ORDER có tiền; EVENT không có tiền để tránh cộng trùng. |
 | Country_Performance | User trial, user trả phí, ARPPU, trial conversion 7 ngày, user từng Billing Retry và tỷ lệ. |

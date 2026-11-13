@@ -13,7 +13,7 @@ BUSINESS_COLUMNS = ['Observed Users', 'Observed Payers', 'Verified Payment Order
     'Original Paid Order Amount (includes refunds)', 'Observed Original Amount per Payer',
     'Unattributed Verified Orders', 'Notes']
 UA_HEADERS = {
-    'Dashboard': ['App', 'Currency', 'As Of Local'] + BUSINESS_COLUMNS,
+    'Dashboard': ['App', 'Currency', 'As Of Local'] + BUSINESS_COLUMNS + ['Country (buyer)'],
     'Plan_Comparison': ['App', 'Plan Type', 'Plan Identifier', 'Offer ID', 'Country (buyer)', 'Currency'] + BUSINESS_COLUMNS,
     'Trial_Cohorts': ['App', 'Trial Start Week UTC', 'Plan Type', 'Plan Identifier', 'Offer ID', 'Country (buyer)', 'Currency',
         'Observed Trial Episodes', 'Mature Trial Episodes (7d after end)', 'Immature Trial Episodes',
@@ -95,7 +95,7 @@ def business_stats(rows, events_by_order, links):
         sum(links[(o['app_key'], o['order_id'])][1] != 'MATCHED' for o, _ in rows), note]
 
 
-def build_ua_reports(enriched, events, links, apps, now, report_tz):
+def build_ua_reports(enriched, events, links, apps, now, report_tz, include_all=False):
     now_dt = timestamp(now)
     ev_by_order = defaultdict(list)
     for e in events:
@@ -208,6 +208,31 @@ def build_ua_reports(enriched, events, links, apps, now, report_tz):
             ('ACTIVE_SUBSCRIPTION_STATE_UNAVAILABLE', '', 'Orders and lifecycle events alone are not a live active-subscriber lookup.'),
         ]:
             quality.append([app['key'], 'WARNING' if count or count == '' else 'INFO', issue, count, details])
-    return {'Dashboard': [[*key, now_dt.astimezone(ZoneInfo(report_tz)).isoformat(), *business_stats(rows, ev_by_order, links)] for key, rows in sorted(dashboard.items())],
+    if include_all:
+        from app.grouping import expand_groups, ALL
+        comparisons = expand_groups(comparisons, [(1,), (2,), (3,), (4,)])
+        dashboard_countries = defaultdict(list)
+        for o, d in enriched:
+            dashboard_countries[(o['app_key'], o.get('country') or 'UNKNOWN')].append((o, d))
+        for app in apps:
+            if not any(key[0] == app['key'] for key in dashboard_countries):
+                dashboard_countries[(app['key'], ALL)] = []
+        dashboard_countries = expand_groups(dashboard_countries, [(1,)])
+        dashboard_rows = []
+        for (app, country), rows in sorted(dashboard_countries.items()):
+            # Counts are computed over all orders, monetary values separately by currency.
+            stats = business_stats(rows, ev_by_order, links)
+            currencies = defaultdict(list)
+            for o, d in rows:
+                currencies[o.get('currency') or 'UNKNOWN'].append((o, d))
+            per_currency = {cur: business_stats(rs, ev_by_order, links) for cur, rs in sorted(currencies.items())}
+            for index in (9, 10, 11, 12):
+                stats[index] = '; '.join(f'{cur}: {values[index]:g}' for cur, values in per_currency.items()
+                                         if isinstance(values[index], (int, float)))
+            dashboard_rows.append([app, '', now_dt.astimezone(ZoneInfo(report_tz)).isoformat(), *stats, country])
+    else:
+        dashboard_rows = [[*key, now_dt.astimezone(ZoneInfo(report_tz)).isoformat(),
+                           *business_stats(rows, ev_by_order, links), ''] for key, rows in sorted(dashboard.items())]
+    return {'Dashboard': dashboard_rows,
         'Plan_Comparison': [[*key, *business_stats(rows, ev_by_order, links)] for key, rows in sorted(comparisons.items())],
         'Trial_Cohorts': cohorts, 'User_Timeline': timeline, 'Data_Quality': quality}

@@ -170,7 +170,7 @@ CORE_METRICS = ['Observed Payers', 'Verified Payment Orders',
     'Verified Renewal Payment Orders', 'Refunded Payment Orders',
     'Charged Amount (processed)']
 COMPACT_COLUMNS = {
-    'Dashboard': ['App', 'Currency'] + CORE_METRICS,
+    'Dashboard': ['App', 'Country (buyer)'] + CORE_METRICS,
     'Plan_Comparison': ['App', 'Plan Type', 'Plan Identifier', 'Offer ID',
         'Country (buyer)', 'Currency'] + CORE_METRICS,
     'Trial_Cohorts': ['App', 'Trial Start Week UTC', 'Plan Type', 'Plan Identifier',
