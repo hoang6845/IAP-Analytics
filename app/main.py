@@ -218,10 +218,22 @@ def sheet_safe(value):
     return s
 
 
-def export_sheets():
+def export_sheets(screen_only=False, apply_screen_query=False):
     if os.getenv('ENABLE_SHEETS', 'true').lower() != 'true':
         return 'Sheets disabled'
     spreadsheet = gspread.authorize(creds()).open_by_key(os.environ['SHEET_ID'])
+    from app.screen_query import load_query, save_query, ensure_controls, parse_controls
+    with database() as db:
+        screen_query = load_query(db)
+    try:
+        screen_ws = spreadsheet.worksheet('Screen_Performance')
+    except gspread.WorksheetNotFound:
+        screen_ws = spreadsheet.add_worksheet(title='Screen_Performance', rows=100, cols=13)
+    ensure_controls(screen_ws, screen_query)
+    if apply_screen_query:
+        screen_query = parse_controls(screen_ws.get('A1:I1'))
+        with database() as db:
+            save_query(db, screen_query)
     with database() as db:
         orders = [dict(row) for row in db.execute('SELECT * FROM orders ORDER BY order_date DESC')]
         events = [dict(row) for row in db.execute('''SELECT app_key, order_id, event_time, event_name,
@@ -233,9 +245,9 @@ def export_sheets():
             raw_json FROM events ORDER BY received_at DESC''')]
         syncs = [dict(row) for row in db.execute('SELECT * FROM sync_log ORDER BY id DESC LIMIT 100')]
     tables = build_reports(orders, events, syncs, config_apps(), utc_now(), os.getenv('TZ', 'Asia/Bangkok'),
-                          include_all=True, combine_currencies=True)
+                          include_all=True, combine_currencies=True, screen_query=screen_query)
     apps = config_apps()
-    if any((a.get('ga4') or {}).get('property_id') for a in apps):
+    if not screen_only and any((a.get('ga4') or {}).get('property_id') for a in apps):
         try:
             ga4_credentials = service_account.Credentials.from_service_account_file(
                 os.environ['GOOGLE_APPLICATION_CREDENTIALS'], scopes=[GA4_SCOPE])
@@ -258,6 +270,9 @@ def export_sheets():
         row[1] = VI_LABELS[row[1]]
     format_requests = []
     for index, (name, header) in enumerate(export_headers.items()):
+        if screen_only and name != 'Screen_Performance':
+            continue
+        offset = 1 if name == 'Screen_Performance' else 0
         try:
             ws = spreadsheet.worksheet(name)
         except gspread.WorksheetNotFound:
@@ -268,35 +283,35 @@ def export_sheets():
             export_rows = [[FILTER_ALL if i == day_index and value == 'ALL' else value for i, value in enumerate(row)] for row in export_rows]
         values = [localized_headers(header)] + [[c if isinstance(c, (float, int)) and not isinstance(c, bool) else sheet_safe(c) for c in row] for row in export_rows]
         # Existing tabs may have only 12 columns; expand before writing the richer report.
-        if ws.row_count < len(values) or ws.col_count < len(header):
-            ws.resize(rows=max(ws.row_count, len(values)), cols=max(ws.col_count, len(header)))
+        if ws.row_count < len(values) + offset or ws.col_count < len(header):
+            ws.resize(rows=max(ws.row_count, len(values) + offset), cols=max(ws.col_count, len(header)))
         # Write first: a failed update must not leave the existing report empty.
-        ws.update(range_name='A1', values=values, value_input_option='RAW')
+        ws.update(range_name=f'A{offset + 1}', values=values, value_input_option='RAW')
         stale_ranges = []
-        if ws.row_count > len(values):
-            stale_ranges.append(f'A{len(values) + 1}:{main_column_letter(ws.col_count)}{ws.row_count}')
+        if ws.row_count > len(values) + offset:
+            stale_ranges.append(f'A{len(values) + offset + 1}:{main_column_letter(ws.col_count)}{ws.row_count}')
         if ws.col_count > len(header):
-            stale_ranges.append(f'{main_column_letter(len(header) + 1)}1:{main_column_letter(ws.col_count)}{len(values)}')
+            stale_ranges.append(f'{main_column_letter(len(header) + 1)}{offset + 1}:{main_column_letter(ws.col_count)}{len(values) + offset}')
         if stale_ranges:
             ws.batch_clear(stale_ranges)
         # Batch presentation changes to avoid one extra API write per operation/tab.
         format_requests += [
             {'updateSheetProperties': {'properties': {'sheetId': ws.id, 'index': index,
                 'hidden': name not in MARKETING_HEADERS and name not in ('Dashboard', 'Data_Quality', 'Description', 'Sync_Log'),
-                'gridProperties': {'frozenRowCount': 1, 'frozenColumnCount': min(2, len(header))}},
+                'gridProperties': {'frozenRowCount': 1 + offset, 'frozenColumnCount': min(2, len(header))}},
                 'fields': 'index,hidden,gridProperties.frozenRowCount,gridProperties.frozenColumnCount'}},
-            {'repeatCell': {'range': {'sheetId': ws.id, 'startRowIndex': 0, 'endRowIndex': 1},
+            {'repeatCell': {'range': {'sheetId': ws.id, 'startRowIndex': offset, 'endRowIndex': offset + 1},
                 'cell': {'userEnteredFormat': {'textFormat': {'bold': True},
                     'backgroundColor': {'red': 0.88, 'green': 0.93, 'blue': 1.0}, 'wrapStrategy': 'WRAP'}},
                 'fields': 'userEnteredFormat'}},
         ]
         if name != 'Sync_Log':
             format_requests.append({'setBasicFilter': {'filter': {'criteria': default_filter_criteria(name, header, export_rows), 'range': {'sheetId': ws.id,
-                'startRowIndex': 0, 'endRowIndex': max(2, len(values)), 'startColumnIndex': 0, 'endColumnIndex': len(header)}}}})
+                'startRowIndex': offset, 'endRowIndex': max(2 + offset, len(values) + offset), 'startColumnIndex': 0, 'endColumnIndex': len(header)}}}})
         # A removed metric shifts later columns; do not leave its percent format
         # attached to a count or amount in the next snapshot.
         format_requests.append({'repeatCell': {'range': {'sheetId': ws.id,
-            'startRowIndex': 1, 'endRowIndex': max(2, len(values)),
+            'startRowIndex': 1 + offset, 'endRowIndex': max(2 + offset, len(values) + offset),
             'startColumnIndex': 0, 'endColumnIndex': len(header)},
             'cell': {}, 'fields': 'userEnteredFormat.numberFormat'}})
         if name == 'Trial_Cohorts' and 'Trial to Paid 7d Rate' in header:
@@ -313,7 +328,32 @@ def export_sheets():
                     'cell': {'userEnteredFormat': {'numberFormat': {'type': 'PERCENT', 'pattern': '0.0%'}}},
                     'fields': 'userEnteredFormat.numberFormat'}})
     spreadsheet.batch_update({'requests': format_requests})
+    if screen_query:
+        label = f"Đã áp dụng: {screen_query.get('start') or 'từ đầu'} → {screen_query.get('end') or 'đến nay'}; {screen_query['mode']}"
+    else:
+        label = 'Đã áp dụng: toàn bộ lịch sử. Chọn ngày YYYY-MM-DD rồi bấm ô F1.'
+    screen_ws.batch_update([{'range': 'G1', 'values': [[label]]}], value_input_option='RAW')
+    if apply_screen_query:
+        screen_ws.update(range_name='F1', values=[[False]], value_input_option='RAW')
     return f'Exported orders={len(orders)}, events={len(events)}'
+
+
+def screen_query_job():
+    if os.getenv('ENABLE_SHEETS', 'true').lower() != 'true' or not LOCK.acquire(blocking=False):
+        return
+    ws = None
+    try:
+        from app.screen_query import pending
+        ws = gspread.authorize(creds()).open_by_key(os.environ['SHEET_ID']).worksheet('Screen_Performance')
+        if pending(ws):
+            export_sheets(screen_only=True, apply_screen_query=True)
+    except (ValueError, TypeError) as ex:
+        if ws:
+            ws.update(range_name='F1:G1', values=[[False, f'Ngày không hợp lệ: {ex}. Dùng YYYY-MM-DD.']], value_input_option='RAW')
+    except Exception:
+        log.exception('Screen date query failed; request remains pending for retry')
+    finally:
+        LOCK.release()
 
 
 def sync_job():
@@ -345,6 +385,7 @@ def startup():
     init_db()
     config_apps()
     scheduler.add_job(sync_job, 'cron', minute=int(os.getenv('SYNC_MINUTE', '5')), id='hourly-sync', max_instances=1, coalesce=True, replace_existing=True)
+    scheduler.add_job(screen_query_job, 'interval', seconds=15, id='screen-date-query', max_instances=1, coalesce=True)
     scheduler.start()
     log.info('Scheduler ready; hourly at minute %s', os.getenv('SYNC_MINUTE', '5'))
 

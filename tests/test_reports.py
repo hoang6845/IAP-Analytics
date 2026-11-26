@@ -169,6 +169,9 @@ class ReportsTest(unittest.TestCase):
                 for ws in worksheets.values():
                     ws.reset_mock()
                 main.export_sheets()
+            screen = worksheets['Screen_Performance']
+            self.assertEqual(screen.update.call_args.kwargs['range_name'], 'A2')
+            self.assertTrue(all(not r.startswith('A1:') for call in screen.batch_clear.call_args_list for r in call.args[0]))
             tx = worksheets['Transactions']
             tx.resize.assert_not_called()
             data = tx.update.call_args.kwargs['values']

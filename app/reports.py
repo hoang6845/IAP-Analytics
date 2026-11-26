@@ -116,7 +116,7 @@ def extra_stats(s):
         s['positive'], s['zero'], s['trials']]
 
 
-def build_reports(orders, events, syncs, apps, now, report_tz='Asia/Bangkok', include_all=False, combine_currencies=False):
+def build_reports(orders, events, syncs, apps, now, report_tz='Asia/Bangkok', include_all=False, combine_currencies=False, screen_query=None):
     # Use one grouping value for currency while retaining the original code on
     # a copy of each order. Monetary reducers split by that code; user/order
     # reducers see all records in the selected country scope.
@@ -234,7 +234,7 @@ def build_reports(orders, events, syncs, apps, now, report_tz='Asia/Bangkok', in
         'Product_Analysis': product_rows, 'Diagnostics': dashboard, 'Users': build_users(enriched, events, links, combine_currencies)}
     result.update(build_ua_reports(enriched, events, links, apps, now, report_tz, include_all))
     from app.marketing_reports import build_marketing_reports
-    marketing = build_marketing_reports(enriched, events, links, apps, result['Trial_Cohorts'], report_tz, include_all)
+    marketing = build_marketing_reports(enriched, events, links, apps, result['Trial_Cohorts'], report_tz, include_all, screen_query)
     result['Data_Quality'].extend(marketing.pop('_quality', []))
     result.update(marketing)
     if combine_currencies:

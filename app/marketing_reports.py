@@ -112,7 +112,7 @@ def payload(event):
     return json.loads(raw) if isinstance(raw, str) else raw
 
 
-def build_marketing_reports(enriched, events, links, apps, cohorts, report_tz, include_all=False):
+def build_marketing_reports(enriched, events, links, apps, cohorts, report_tz, include_all=False, screen_query=None):
     combine_currencies = any('_report_currency' in o for o, _ in enriched)
     tables = {name: [] for name in HEADERS}
     production = [e for e in events if (e.get('environment') or '').lower() == 'production']
@@ -209,6 +209,7 @@ def build_marketing_reports(enriched, events, links, apps, cohorts, report_tz, i
                 revenue(rs), revenue(rs, 'renew'), revenue(rs, 'convert'), revenue(rs, 'other'),
                 sum(r['o']['state'] == 'PROCESSED' and r['o'].get('charged') in ('', None) for r in rs)]
 
+    from app.screen_query import date_match, ACQUISITION
     country, package, theme, screen, overview = (defaultdict(list) for _ in range(5))
     for r in records:
         o, d = r['o'], r['d']
@@ -217,7 +218,9 @@ def build_marketing_reports(enriched, events, links, apps, cohorts, report_tz, i
         package[(app, d['plan'], d['identifier'], buyer, cur)].append(r)
         attr = attribute(r)
         theme[(app, *attr, buyer, cur)].append(r)
-        screen[(app, attr[3], buyer, cur)].append(r)
+        filter_date = starts.get(chain_of(r)) if screen_query and screen_query.get('mode') == ACQUISITION else r['date']
+        if date_match(filter_date.isoformat() if filter_date else None, screen_query, report_tz):
+            screen[(app, attr[3], buyer, cur)].append(r)
         overview[(app, 'ALL', buyer if combine_currencies else cur)].append(r)
         day = r['date'].astimezone(ZoneInfo(report_tz)).date().isoformat() if r['date'] else 'UNKNOWN'
         overview[(app, day, buyer if combine_currencies else cur)].append(r)
@@ -363,17 +366,17 @@ def build_marketing_reports(enriched, events, links, apps, cohorts, report_tz, i
         tables['Plan_Upgrades'].append([*key, len({r['user'] for r in rs}), len(rs), revenue(rs),
             NOTE + ' Upgrade từ webhook subscription_upgraded; lifetime dùng gói active app chụp trong iap_from_plan.'])
 
-    def attributed_stats(rs):
+    def attributed_stats(rs, query=None):
         cs = {chain_of(r) for r in rs}
         return [len({r['user'] for r in rs if r['user'] and trial(r['d'])}),
                 len({r['user'] for r in rs if r['user'] and paid(r['o'])}),
                 len({r['user'] for r in rs if r['user'] and paid(r['o']) and r['kind'] == 'convert'}),
                 len({r['user'] for r in rs if r['user'] and paid(r['o']) and r['kind'] == 'renew'}),
-                len({c[1] for c in cs if c[1] and any(e['event_name'] in CANCEL for e in lifecycle[c])}),
+                len({c[1] for c in cs if c[1] and any(e['event_name'] in CANCEL and (not query or query.get('mode') == ACQUISITION or date_match(e.get('event_time'), query, report_tz)) for e in lifecycle[c])}),
                 revenue(rs), revenue(rs, 'renew'), revenue(rs, 'convert'), revenue(rs, 'other'),
                 NOTE + ' Attribution từ acquisition snapshot; UNKNOWN không được tự gán vào nội dung/màn gần nhất. Click/đóng xem Firebase_Events.']
     for name, grouped in [('Theme_Performance', theme), ('Screen_Performance', screen)]:
-        tables[name] = [[*key, *attributed_stats(rs)] for key, rs in sorted(grouped.items())]
+        tables[name] = [[*key, *attributed_stats(rs, screen_query if name == 'Screen_Performance' else None)] for key, rs in sorted(grouped.items())]
     for app in apps:
         missing = sum(chain_of(r) not in attrs or attribute(r)[3] == 'UNKNOWN' for r in records if r['o']['app_key'] == app['key'])
         tables.setdefault('_quality', []).append([app['key'], 'WARNING' if missing else 'INFO', 'ACQUISITION_ATTRIBUTION_MISSING', missing,
